@@ -94,6 +94,9 @@ st.sidebar.caption("Flower v1.29 · TensorFlow · Streamlit")
 # ============================================
 
 LEDGER_PATH = "blockchain/ledger.json"
+LOG_DIR = "logs"
+METRICS_PATH = os.path.join(LOG_DIR, "metrics.jsonl")
+SERVER_LOG_PATH = os.path.join(LOG_DIR, "server.log")
 
 def load_ledger():
     if os.path.exists(LEDGER_PATH):
@@ -103,6 +106,36 @@ def load_ledger():
             except json.JSONDecodeError:
                 return []
     return []
+
+
+def _tail_file(path, max_lines=200):
+    if not os.path.exists(path):
+        return ""
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    return "".join(lines[-max_lines:])
+
+
+def _load_metrics():
+    if not os.path.exists(METRICS_PATH):
+        return pd.DataFrame()
+    rows = []
+    with open(METRICS_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "metrics" in df.columns:
+        metrics_df = df["metrics"].apply(pd.Series)
+        df = pd.concat([df.drop(columns=["metrics"]), metrics_df], axis=1)
+    return df
 
 # ============================================
 # PAGE: OVERVIEW
@@ -280,6 +313,26 @@ elif page == "📊 Training Metrics":
 
     st.info("Training metrics are collected live during federated training rounds. Start the server and clients to see live data.")
 
+    if st.button("Refresh now"):
+        st.experimental_rerun()
+
+    metrics_df = _load_metrics()
+    if not metrics_df.empty:
+        st.markdown("<div class='section-title'>Round Metrics</div>", unsafe_allow_html=True)
+        st.dataframe(metrics_df, width='stretch')
+
+        if "round" in metrics_df.columns and "accuracy" in metrics_df.columns:
+            fig, ax = plt.subplots(figsize=(8, 4), facecolor="#0e1117")
+            ax.set_facecolor("#1a1d2e")
+            ax.plot(metrics_df["round"], metrics_df["accuracy"], "o-", color="#4caf8a")
+            ax.set_xlabel("Round", color="#8a8fa8")
+            ax.set_ylabel("Accuracy", color="#8a8fa8")
+            ax.tick_params(colors="#8a8fa8")
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#2a2d3e")
+            st.pyplot(fig)
+            plt.close(fig)
+
     ledger = load_ledger()
     if ledger:
         df = pd.DataFrame(ledger)
@@ -303,6 +356,23 @@ elif page == "📊 Training Metrics":
         "Value": ["FedProx", "5", "2", "2", "0.01", "1e-4", "32", "EfficientNetB0"]
     }
     st.table(pd.DataFrame(config_data))
+
+    st.markdown("---")
+    st.markdown("<div class='section-title'>Live Logs</div>", unsafe_allow_html=True)
+
+    log_choice = st.selectbox(
+        "Choose log",
+        [
+            "server.log",
+            "client_1.log",
+            "client_2.log",
+            "client_3.log",
+            "client_4.log",
+        ],
+    )
+    log_path = os.path.join(LOG_DIR, log_choice)
+    log_text = _tail_file(log_path, max_lines=200)
+    st.text_area("Log output", log_text, height=300)
 
 
 # ============================================

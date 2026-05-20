@@ -17,6 +17,7 @@ Available client IDs: client_1, client_2, client_3, client_4
 import os
 import sys
 import argparse
+from datetime import datetime
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import flwr as fl
@@ -40,6 +41,17 @@ DATASET_DIR    = "dataset/partitions"
 IMAGE_ROOT     = "dataset/raw/ISIC_2019_Training_Input"
 
 VALID_CLIENTS  = ["client_1", "client_2", "client_3", "client_4"]
+LOG_DIR = "logs"
+
+
+def _log(client_id, message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] [{client_id.upper()}] {message}"
+    print(line)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_path = os.path.join(LOG_DIR, f"{client_id}.log")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 # ============================================
@@ -97,11 +109,11 @@ def start_client(client_id, server_address):
     print("=" * 50)
     print(f"   CLIENT: {client_id.upper()}")
     print("=" * 50)
-    print(f"  CSV      : {csv_path}")
-    print(f"  Images   : {IMAGE_ROOT}")
-    print(f"  Server   : {server_address}")
+    _log(client_id, f"CSV: {csv_path}")
+    _log(client_id, f"Images: {IMAGE_ROOT}")
+    _log(client_id, f"Server: {server_address}")
     print("=" * 50)
-    print(f"\n[{client_id}] Loading dataset...")
+    _log(client_id, "Loading dataset...")
 
     train_gen, val_gen, class_names = prepare_client_generators(
         csv_path=csv_path,
@@ -111,9 +123,9 @@ def start_client(client_id, server_address):
     train_samples = getattr(train_gen, "n", None) or getattr(train_gen, "samples", None)
     val_samples = getattr(val_gen, "n", None) or getattr(val_gen, "samples", None)
 
-    print(
-        f"[{client_id}] Train: {train_samples} samples | "
-        f"Val: {val_samples} samples"
+    _log(
+        client_id,
+        f"Train samples: {train_samples} | Val samples: {val_samples}",
     )
 
     # ========================================
@@ -139,9 +151,10 @@ def start_client(client_id, server_address):
         val_steps=len(val_gen),
         train_samples=train_samples,
         val_samples=val_samples,
+        log_path=os.path.join(LOG_DIR, f"{client_id}.log"),
     )
 
-    print(f"[{client_id}] Connecting to server at {server_address}...")
+    _log(client_id, f"Connecting to server at {server_address}...")
 
     fl.client.start_client(
         server_address=server_address,
@@ -154,7 +167,7 @@ def start_client(client_id, server_address):
 
     ledger_path = f"blockchain/ledger_{client_id}.json"
     dag.save_ledger(filepath=ledger_path)
-    print(f"\n[{client_id}] DAG ledger saved → {ledger_path}")
+    _log(client_id, f"DAG ledger saved -> {ledger_path}")
 
 
 if __name__ == "__main__":

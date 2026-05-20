@@ -1,0 +1,47 @@
+[
+    {
+        "transaction_id": "1e741e05461b844ab456644ffe58309647c2c8085a4664302914dc2e17f91ff6",
+        "client_id": "client_1",
+        "model_hash": "6cb4e8ba6555029eb4bf7f1d7c628e5679f3986134f1040d7f6b475e513c1ae3",
+        "accuracy": 0.0,
+        "references": [],
+        "timestamp": "2026-05-20 10:53:38.508496",
+        "validated": true
+    },
+    {
+        "transaction_id": "6896d5998b24977b36ce453bd321e2d2b30cda0fc6e4f20fdd7ac711ea1cbeeb",
+        "client_id": "client_1",
+        "model_hash": "6cb4e8ba6555029eb4bf7f1d7c628e5679f3986134f1040d7f6b475e513c1ae3",
+        "accuracy": 0.0,
+        "references": [],
+        "timestamp": "2026-05-20 10:57:23.943339",
+        "validated": true
+    },
+    {
+        "transaction_id": "533f896c9521d5199b2a64e1deda07b8020dd007fad91b9e58e66f338934e1de",
+        "client_id": "client_1",
+        "model_hash": "6cb4e8ba6555029eb4bf7f1d7c628e5679f3986134f1040d7f6b475e513c1ae3",
+        "accuracy": 0.0,
+        "references": [],
+        "timestamp": "2026-05-20 11:01:33.282442",
+        "validated": true
+    },
+    {
+        "transaction_id": "6adb49aeb279eb10d3d8bfbe8ac5f532d27531492a80ecaf527dfa4a20c4361c",
+        "client_id": "client_1",
+        "model_hash": "6cb4e8ba6555029eb4bf7f1d7c628e5679f3986134f1040d7f6b475e513c1ae3",
+        "accuracy": 0.0,
+        "references": [],
+        "timestamp": "2026-05-20 11:05:34.998025",
+        "validated": true
+    },
+    {
+        "transaction_id": "f25e1734751d78ddd33d8c0f208c507d04f2c1d42b31423c2ca7546a3eb92673",
+        "client_id": "client_1",
+        "model_hash": "6cb4e8ba6555029eb4bf7f1d7c628e5679f3986134f1040d7f6b475e513c1ae3",
+        "accuracy": 0.0,
+        "references": [],
+        "timestamp": "2026-05-20 11:09:49.721206",
+        "validated": true
+    }
+]

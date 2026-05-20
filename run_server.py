@@ -13,6 +13,8 @@ import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import argparse
+from datetime import datetime
+import json
 
 import flwr as fl
 from federated.aggregator import Aggregator
@@ -26,6 +28,18 @@ from federated.fedprox import FedProx
 SERVER_ADDRESS = "0.0.0.0:8080"
 NUM_ROUNDS = 5
 TOTAL_CLIENTS = 4
+LOG_DIR = "logs"
+SERVER_LOG_PATH = os.path.join(LOG_DIR, "server.log")
+METRICS_PATH = os.path.join(LOG_DIR, "metrics.jsonl")
+
+
+def _log(message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] [SERVER] {message}"
+    print(line)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    with open(SERVER_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 # ============================================
@@ -39,20 +53,48 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
 
+    def configure_fit(self, server_round, parameters, client_manager):
+        fit_config = super().configure_fit(server_round, parameters, client_manager)
+        client_ids = [client.cid for client, _ in fit_config]
+        _log(
+            f"Round {server_round} - selected clients for training: "
+            f"{', '.join(client_ids)}"
+        )
+        return fit_config
+
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        eval_config = super().configure_evaluate(server_round, parameters, client_manager)
+        client_ids = [client.cid for client, _ in eval_config]
+        _log(
+            f"Round {server_round} - selected clients for evaluation: "
+            f"{', '.join(client_ids)}"
+        )
+        return eval_config
+
     def aggregate_fit(self, server_round, results, failures):
 
         if not results:
             return None, {}
 
-        print(f"\n[Server] Round {server_round} — aggregating {len(results)} clients")
+        _log(f"Round {server_round} - aggregating {len(results)} clients")
 
         client_weights = []
         client_sizes = []
+        client_ids = []
         for _, fit_res in results:
             client_weights.append(
                 fl.common.parameters_to_ndarrays(fit_res.parameters)
             )
             client_sizes.append(fit_res.num_examples)
+            client_ids.append(fit_res.metrics.get("client_id", "unknown"))
+
+        _log(
+            "Received updates from: "
+            + ", ".join(
+                f"{cid} ({size} samples)"
+                for cid, size in zip(client_ids, client_sizes)
+            )
+        )
 
         aggregated_weights = self.aggregator.weighted_average(
             client_weights,
@@ -62,6 +104,51 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         aggregated_parameters = fl.common.ndarrays_to_parameters(aggregated_weights)
 
         return aggregated_parameters, {}
+
+    def aggregate_evaluate(self, server_round, results, failures):
+
+        if not results:
+            return None, {}
+
+        total_examples = 0
+        weighted_loss = 0.0
+        weighted_metrics = {}
+
+        for _, eval_res in results:
+            num_examples = eval_res.num_examples
+            total_examples += num_examples
+            weighted_loss += eval_res.loss * num_examples
+
+            for key, value in eval_res.metrics.items():
+                weighted_metrics[key] = (
+                    weighted_metrics.get(key, 0.0) + value * num_examples
+                )
+
+        avg_loss = weighted_loss / total_examples if total_examples else None
+        avg_metrics = {
+            key: value / total_examples for key, value in weighted_metrics.items()
+        }
+
+        if avg_loss is not None:
+            metrics_str = " | ".join(
+                f"{k}={v:.4f}" for k, v in avg_metrics.items()
+            )
+            _log(
+                f"Round {server_round} eval: loss={avg_loss:.4f}"
+                + (f" | {metrics_str}" if metrics_str else "")
+            )
+
+            os.makedirs(LOG_DIR, exist_ok=True)
+            payload = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "round": server_round,
+                "loss": avg_loss,
+                "metrics": avg_metrics,
+            }
+            with open(METRICS_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+
+        return avg_loss, avg_metrics
 
 
 # ============================================
@@ -107,6 +194,8 @@ def parse_args():
 
 def start_server(args):
 
+    os.makedirs(LOG_DIR, exist_ok=True)
+
     min_fit_clients = args.min_fit_clients or args.total_clients
     min_evaluate_clients = min_fit_clients
     min_available_clients = args.total_clients
@@ -124,14 +213,14 @@ def start_server(args):
     print("=" * 50)
     print("   FEDERATED LEARNING SERVER")
     print("=" * 50)
-    print(f"  Address  : {args.server}")
-    print(f"  Rounds   : {args.rounds}")
-    print(f"  Strategy : FedProx (mu=0.01)")
-    print(f"  Total Clients: {args.total_clients}")
-    print(f"  Min Clients: {min_fit_clients}")
-    print(f"  Fraction Fit: {fraction_fit}")
+    _log(f"Address: {args.server}")
+    _log(f"Rounds: {args.rounds}")
+    _log("Strategy: FedProx (mu=0.01)")
+    _log(f"Total clients: {args.total_clients}")
+    _log(f"Min clients per round: {min_fit_clients}")
+    _log(f"Fraction fit: {fraction_fit}")
     print("=" * 50)
-    print("\n[Server] Waiting for clients...\n")
+    _log("Waiting for clients...")
 
     fl.server.start_server(
         server_address=args.server,

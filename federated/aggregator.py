@@ -49,7 +49,8 @@ class Aggregator:
         for layer_weights in zip(*client_weights):
 
             weighted_layer = np.zeros_like(
-                layer_weights[0]
+                layer_weights[0],
+                dtype=np.float64,
             )
 
             for weights, size in zip(
@@ -58,11 +59,12 @@ class Aggregator:
             ):
 
                 weighted_layer += (
-                    weights * (size / total_samples)
+                    weights.astype(np.float64)
+                    * (size / total_samples)
                 )
 
             aggregated_weights.append(
-                weighted_layer
+                weighted_layer.astype(layer_weights[0].dtype)
             )
 
         return aggregated_weights

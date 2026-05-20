@@ -127,70 +127,55 @@ def create_partitions(
     # CREATE CLIENT PARTITIONS
     # ========================================
 
+    client_buffers = {client: [] for client in clients}
+
+    for class_name in CLASS_NAMES:
+        images = class_images[class_name]
+        total = len(images)
+
+        dominant_client = None
+        for client, dom in dominant_classes.items():
+            if dom == class_name:
+                dominant_client = client
+                break
+
+        if dominant_client:
+            weights = {}
+            for client in clients:
+                if client == dominant_client:
+                    weights[client] = dominant_ratio
+                else:
+                    weights[client] = (1 - dominant_ratio) / (len(clients) - 1)
+        else:
+            weights = {client: 1 / len(clients) for client in clients}
+
+        raw_counts = {client: weights[client] * total for client in clients}
+        counts = {client: int(raw_counts[client]) for client in clients}
+
+        remaining = total - sum(counts.values())
+        for client in sorted(
+            clients,
+            key=lambda c: raw_counts[c] - counts[c],
+            reverse=True,
+        ):
+            if remaining <= 0:
+                break
+            counts[client] += 1
+            remaining -= 1
+
+        start = 0
+        for client in clients:
+            take_count = counts[client]
+            selected = images[start:start + take_count]
+            client_buffers[client].extend(selected)
+            start += take_count
+
     for client in clients:
 
         print(f"\n[INFO] Creating {client}")
 
-        dominant_class = dominant_classes.get(client)
-
-        client_data = []
-
-        # ======================================
-        # BALANCED CLIENT
-        # ======================================
-
-        if dominant_class is None:
-
-            for class_name in CLASS_NAMES:
-
-                images = class_images[class_name]
-
-                take_count = len(images) // 10
-
-                selected = images[:take_count]
-
-                class_images[class_name] = images[take_count:]
-
-                client_data.extend(selected)
-
-        # ======================================
-        # SEMI NON-IID CLIENTS
-        # ======================================
-
-        else:
-
-            for class_name in CLASS_NAMES:
-
-                images = class_images[class_name]
-
-                if class_name == dominant_class:
-
-                    take_count = int(
-                        len(images) * dominant_ratio
-                    )
-
-                else:
-
-                    take_count = int(
-                        len(images)
-                        * (
-                            (1 - dominant_ratio)
-                            / (len(CLASS_NAMES) - 1)
-                        )
-                    )
-
-                selected = images[:take_count]
-
-                class_images[class_name] = images[take_count:]
-
-                client_data.extend(selected)
-
-        # ======================================
-        # SAVE CLIENT CSV
-        # ======================================
-
         client_df = pd.DataFrame(
-            client_data,
+            client_buffers[client],
             columns=["image", "label"]
         )
 
@@ -205,7 +190,7 @@ def create_partitions(
         )
 
         print(
-            f"[INFO] Saved {len(client_data)} "
+            f"[INFO] Saved {len(client_buffers[client])} "
             f"samples to {save_path}"
         )
 
