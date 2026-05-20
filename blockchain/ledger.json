@@ -1,0 +1,33 @@
+[
+    {
+        "transaction_id": "7f0f884e8aaef716d0585ac755f6d89e8c0b59febff9aa52344ebed1fb1871ba",
+        "client_id": "client_1",
+        "model_hash": "9b99f135f2fd1106d89a02320e6a7a0204a25dbb6fcd928c6cdd96b30247e3f9",
+        "accuracy": 0.91,
+        "references": [],
+        "timestamp": "2026-05-19 20:23:39.637673",
+        "validated": true
+    },
+    {
+        "transaction_id": "34ddf168e736ff2cc67a756845af055ce424ae20ed1d4572741937f4ce12d716",
+        "client_id": "client_2",
+        "model_hash": "b08778e504c92f581b8e02dea205e111af53c49207192b9b4b9f32a928729bb1",
+        "accuracy": 0.94,
+        "references": [
+            "7f0f884e8aaef716d0585ac755f6d89e8c0b59febff9aa52344ebed1fb1871ba"
+        ],
+        "timestamp": "2026-05-19 20:23:39.637673",
+        "validated": true
+    },
+    {
+        "transaction_id": "58af79669be80eab25836fda2a74e568ec211bfe86b19111fd43a458b9918391",
+        "client_id": "client_3",
+        "model_hash": "2cd395c891a1a230de1572cf37c6070c32c2d94daaf1460c4873d37f3fede298",
+        "accuracy": 0.96,
+        "references": [
+            "34ddf168e736ff2cc67a756845af055ce424ae20ed1d4572741937f4ce12d716"
+        ],
+        "timestamp": "2026-05-19 20:23:39.637673",
+        "validated": true
+    }
+]
