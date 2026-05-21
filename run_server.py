@@ -131,6 +131,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
     def configure_fit(self, server_round, parameters, client_manager):
         fit_config = super().configure_fit(server_round, parameters, client_manager)
         self.round_start_time[server_round] = time.time()
+
         updated_config = []
         for client, fit_ins in fit_config:
             fit_ins.config["round"] = server_round

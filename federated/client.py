@@ -5,7 +5,7 @@ import json
 from sklearn.metrics import f1_score, roc_auc_score
 from datetime import datetime
 
-from models.model import build_model
+from models.model import build_model, unfreeze_model
 from blockchain.transaction import Transaction
 from blockchain.hashing import generate_hash
 from blockchain.shared_ledger import build_transaction
@@ -27,6 +27,9 @@ class FLClient(fl.client.NumPyClient):
         train_samples=None,
         val_samples=None,
         log_path=None,
+        fine_tune_round=5,
+        fine_tune_at=100,
+        fine_tune_lr=1e-5,
     ):
 
         self.model = build_model()
@@ -47,6 +50,11 @@ class FLClient(fl.client.NumPyClient):
         self.dag = dag
         self.validator = validator
         self.log_path = log_path
+
+        self.fine_tuned = False
+        self.fine_tune_round = fine_tune_round
+        self.fine_tune_at = fine_tune_at
+        self.fine_tune_lr = fine_tune_lr
 
     # =========================
     # Get Model Parameters
@@ -123,6 +131,19 @@ class FLClient(fl.client.NumPyClient):
 
         # Load global model weights
         self.model.set_weights(parameters)
+
+        round_number = int(config.get("round", 0))
+        if not self.fine_tuned and round_number >= self.fine_tune_round:
+            self._log(
+                f"Starting fine-tuning at round {round_number} with lr={self.fine_tune_lr}"
+            )
+            self.model = unfreeze_model(
+                self.model,
+                fine_tune_at=self.fine_tune_at,
+                learning_rate=self.fine_tune_lr,
+                keep_batch_norm_frozen=True,
+            )
+            self.fine_tuned = True
 
         # Train locally
         if self.y_train is None:
