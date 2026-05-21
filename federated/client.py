@@ -1,12 +1,14 @@
 import flwr as fl
 import tensorflow as tf
 import numpy as np
+import json
 from sklearn.metrics import f1_score, roc_auc_score
 from datetime import datetime
 
 from models.model import build_model
 from blockchain.transaction import Transaction
 from blockchain.hashing import generate_hash
+from blockchain.shared_ledger import build_transaction
 
 
 class FLClient(fl.client.NumPyClient):
@@ -126,7 +128,7 @@ class FLClient(fl.client.NumPyClient):
         if self.y_train is None:
             self.model.fit(
                 self.x_train,
-                epochs=1,
+                epochs=2,
                 steps_per_epoch=self.train_steps,
                 verbose=1,
             )
@@ -134,7 +136,7 @@ class FLClient(fl.client.NumPyClient):
             self.model.fit(
                 self.x_train,
                 self.y_train,
-                epochs=1,
+                epochs=2,
                 batch_size=32,
                 verbose=1,
             )
@@ -160,7 +162,7 @@ class FLClient(fl.client.NumPyClient):
 
         y_true, y_prob = self._collect_eval_data()
         metrics.update(self._compute_extra_metrics(y_true, y_prob))
-        accuracy = metrics.get("accuracy", 0.0)
+        accuracy = metrics.get("accuracy", metrics.get("categorical_accuracy", 0.0))
 
         self._log(
             "Local training done | "
@@ -215,6 +217,16 @@ class FLClient(fl.client.NumPyClient):
             {
                 **(metrics if metrics else {"accuracy": float(accuracy)}),
                 "client_id": self.client_id,
+                "transaction": json.dumps(
+                    build_transaction(
+                        client_id=self.client_id,
+                        round_number=int(config.get("round", 0)),
+                        model_hash=model_hash,
+                        accuracy=float(accuracy),
+                        f1_macro=float(metrics.get("f1_macro", 0.0)),
+                        roc_auc_ovr=float(metrics.get("roc_auc_ovr", 0.0)),
+                    )
+                ),
             },
         )
 
@@ -245,7 +257,7 @@ class FLClient(fl.client.NumPyClient):
 
         y_true, y_prob = self._collect_eval_data()
         metrics.update(self._compute_extra_metrics(y_true, y_prob))
-        accuracy = metrics.get("accuracy", 0.0)
+        accuracy = metrics.get("accuracy", metrics.get("categorical_accuracy", 0.0))
 
         num_examples = (
             self.val_samples

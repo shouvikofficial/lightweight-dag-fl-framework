@@ -14,9 +14,11 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import argparse
 from datetime import datetime
+import time
 import json
 
 import flwr as fl
+from blockchain.shared_ledger import add_transaction
 from federated.aggregator import Aggregator
 from federated.fedprox import FedProx
 
@@ -26,11 +28,81 @@ from federated.fedprox import FedProx
 # ============================================
 
 SERVER_ADDRESS = "0.0.0.0:8080"
-NUM_ROUNDS = 5
+NUM_ROUNDS = 20
 TOTAL_CLIENTS = 4
 LOG_DIR = "logs"
 SERVER_LOG_PATH = os.path.join(LOG_DIR, "server.log")
 METRICS_PATH = os.path.join(LOG_DIR, "metrics.jsonl")
+
+
+def _trend_arrow(curr, prev, higher_is_better=True):
+    if prev is None:
+        return "-"
+    if curr == prev:
+        return "->"
+    if higher_is_better:
+        return "^" if curr > prev else "v"
+    return "v" if curr < prev else "^"
+
+
+def _fmt_time(seconds):
+    if seconds is None:
+        return "N/A"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:02d}h {m:02d}m {s:02d}s"
+    return f"{m:02d}m {s:02d}s"
+
+
+def _print_round_summary(
+    server_round,
+    clients,
+    avg_loss,
+    avg_metrics,
+    prev_metrics,
+    train_time_sec,
+):
+    accuracy = avg_metrics.get("accuracy", 0.0)
+    f1_macro = avg_metrics.get("f1_macro", 0.0)
+    roc_auc = avg_metrics.get("roc_auc_ovr", 0.0)
+
+    prev_loss = prev_metrics.get("loss") if prev_metrics else None
+    prev_acc = prev_metrics.get("accuracy") if prev_metrics else None
+    prev_f1 = prev_metrics.get("f1_macro") if prev_metrics else None
+    prev_auc = prev_metrics.get("roc_auc_ovr") if prev_metrics else None
+
+    print("=" * 50)
+    print(f"ROUND {server_round} - GLOBAL EVALUATION")
+    print("=" * 50)
+    print()
+    print(f"Participating Clients : {', '.join(clients) if clients else 'N/A'}")
+    print(f"Training Time         : {_fmt_time(train_time_sec)}")
+    print()
+    print("Metric Summary")
+    print("-" * 14)
+    print(f"Loss        : {avg_loss:.4f} {_trend_arrow(avg_loss, prev_loss, False)}")
+    print(f"Accuracy    : {accuracy * 100:.2f}% {_trend_arrow(accuracy, prev_acc, True)}")
+    print(f"F1 Macro    : {f1_macro:.4f} {_trend_arrow(f1_macro, prev_f1, True)}")
+    print(f"ROC AUC OVR : {roc_auc:.4f} {_trend_arrow(roc_auc, prev_auc, True)}")
+    print()
+    print("Training Status")
+    print("-" * 15)
+    status = []
+    if prev_loss is not None and avg_loss < prev_loss:
+        status.append("Global model converging successfully")
+    if prev_loss is not None:
+        status.append("Loss decreasing steadily" if avg_loss < prev_loss else "Loss is not improving")
+    if prev_auc is not None:
+        status.append("AUC improving consistently" if roc_auc > prev_auc else "AUC plateauing")
+    if prev_f1 is not None:
+        status.append("Minority-class prediction improving" if f1_macro > prev_f1 else "F1 needs more rounds")
+    if not status:
+        status.append("Waiting for next round to assess trends")
+    for item in status:
+        print(f"* {item}")
+    print()
+    print("=" * 50)
 
 
 def _log(message):
@@ -52,22 +124,27 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         super().__init__(*args, **kwargs)
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
+        self.round_start_time = {}
+        self.prev_metrics = None
+        self.last_round_clients = []
 
     def configure_fit(self, server_round, parameters, client_manager):
         fit_config = super().configure_fit(server_round, parameters, client_manager)
-        client_ids = [client.cid for client, _ in fit_config]
+        self.round_start_time[server_round] = time.time()
+        updated_config = []
+        for client, fit_ins in fit_config:
+            fit_ins.config["round"] = server_round
+            updated_config.append((client, fit_ins))
+
         _log(
-            f"Round {server_round} - selected clients for training: "
-            f"{', '.join(client_ids)}"
+            f"Round {server_round} - selected {len(updated_config)} clients for training"
         )
-        return fit_config
+        return updated_config
 
     def configure_evaluate(self, server_round, parameters, client_manager):
         eval_config = super().configure_evaluate(server_round, parameters, client_manager)
-        client_ids = [client.cid for client, _ in eval_config]
         _log(
-            f"Round {server_round} - selected clients for evaluation: "
-            f"{', '.join(client_ids)}"
+            f"Round {server_round} - selected {len(eval_config)} clients for evaluation"
         )
         return eval_config
 
@@ -88,12 +165,27 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
             client_sizes.append(fit_res.num_examples)
             client_ids.append(fit_res.metrics.get("client_id", "unknown"))
 
+            tx_json = fit_res.metrics.get("transaction")
+            if tx_json:
+                try:
+                    tx = json.loads(tx_json)
+                    status = add_transaction(tx)
+                    _log("[BLOCKCHAIN] Transaction verified")
+                    if status.get("reason") == "bad_signature":
+                        _log("[BLOCKCHAIN] Signature invalid")
+                    else:
+                        _log("[BLOCKCHAIN] Signature valid")
+
+                    if status.get("validated"):
+                        _log("[BLOCKCHAIN] Update accepted")
+                    else:
+                        _log("[BLOCKCHAIN] Update rejected")
+                except json.JSONDecodeError:
+                    _log("[BLOCKCHAIN] Transaction parse failed")
+
         _log(
             "Received updates from: "
-            + ", ".join(
-                f"{cid} ({size} samples)"
-                for cid, size in zip(client_ids, client_sizes)
-            )
+            + ", ".join(client_ids)
         )
 
         aggregated_weights = self.aggregator.weighted_average(
@@ -103,6 +195,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
 
         aggregated_parameters = fl.common.ndarrays_to_parameters(aggregated_weights)
 
+        self.last_round_clients = client_ids
         return aggregated_parameters, {}
 
     def aggregate_evaluate(self, server_round, results, failures):
@@ -147,6 +240,25 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
             }
             with open(METRICS_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps(payload) + "\n")
+
+            train_time_sec = None
+            if server_round in self.round_start_time:
+                train_time_sec = time.time() - self.round_start_time[server_round]
+
+            _print_round_summary(
+                server_round,
+                self.last_round_clients,
+                avg_loss,
+                avg_metrics,
+                self.prev_metrics,
+                train_time_sec,
+            )
+            self.prev_metrics = {
+                "loss": avg_loss,
+                "accuracy": avg_metrics.get("accuracy", 0.0),
+                "f1_macro": avg_metrics.get("f1_macro", 0.0),
+                "roc_auc_ovr": avg_metrics.get("roc_auc_ovr", 0.0),
+            }
 
         return avg_loss, avg_metrics
 
