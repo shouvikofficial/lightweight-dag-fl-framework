@@ -151,7 +151,7 @@ class FLClient(fl.client.NumPyClient):
                 self.x_train,
                 epochs=2,
                 steps_per_epoch=self.train_steps,
-                verbose=1,
+                verbose=2,
             )
         else:
             self.model.fit(
@@ -159,7 +159,7 @@ class FLClient(fl.client.NumPyClient):
                 self.y_train,
                 epochs=2,
                 batch_size=32,
-                verbose=1,
+                verbose=2,
             )
 
         # Get updated weights

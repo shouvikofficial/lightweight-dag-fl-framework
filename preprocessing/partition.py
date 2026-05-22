@@ -27,6 +27,7 @@ DOMINANT_CLASSES = {
 }
 
 DOMINANT_RATIO = 0.7
+GLOBAL_TEST_RATIO = 0.1
 
 CLASS_NAMES = [
     "MEL",
@@ -50,7 +51,8 @@ def create_partitions(
     clients=None,
     dominant_classes=None,
     dominant_ratio=DOMINANT_RATIO,
-    seed=42
+    seed=42,
+    global_test_ratio=GLOBAL_TEST_RATIO,
 ):
     """
     Create Semi Non-IID federated data partitions
@@ -122,6 +124,27 @@ def create_partitions(
     for class_name in CLASS_NAMES:
 
         random.shuffle(class_images[class_name])
+
+    # ========================================
+    # RESERVE GLOBAL TEST SET
+    # ========================================
+
+    global_test = []
+    for class_name in CLASS_NAMES:
+        images = class_images[class_name]
+        take_count = int(len(images) * global_test_ratio)
+        global_test.extend(images[:take_count])
+        class_images[class_name] = images[take_count:]
+
+    global_test_df = pd.DataFrame(
+        global_test,
+        columns=["image", "label"],
+    )
+    global_test_path = os.path.join(output_dir, "global_test.csv")
+    global_test_df.to_csv(global_test_path, index=False)
+    print(
+        f"[INFO] Saved {len(global_test)} global test samples to {global_test_path}"
+    )
 
     # ========================================
     # CREATE CLIENT PARTITIONS

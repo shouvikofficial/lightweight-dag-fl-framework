@@ -331,3 +331,33 @@ def prepare_client_generators(
     ]
 
     return train_generator, val_generator, class_names
+
+
+# ============================================
+# GLOBAL TEST GENERATOR
+# ============================================
+
+def prepare_global_test_generator(
+    csv_path,
+    image_root,
+    batch_size=BATCH_SIZE,
+):
+    df = pd.read_csv(csv_path)
+
+    if "image" not in df.columns or "label" not in df.columns:
+        raise ValueError("CSV must contain 'image' and 'label' columns")
+
+    test_datagen = ImageDataGenerator()
+
+    test_generator = test_datagen.flow_from_dataframe(
+        df,
+        directory=image_root,
+        x_col="image",
+        y_col="label",
+        target_size=(IMAGE_SIZE, IMAGE_SIZE),
+        class_mode="categorical",
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    return test_generator

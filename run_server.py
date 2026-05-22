@@ -16,11 +16,16 @@ import argparse
 from datetime import datetime
 import time
 import json
+from typing import Tuple
+import numpy as np
 
 import flwr as fl
 from blockchain.shared_ledger import add_transaction
 from federated.aggregator import Aggregator
 from federated.fedprox import FedProx
+from models.model import build_model
+from preprocessing.dataset_loader import prepare_global_test_generator
+from sklearn.metrics import f1_score, roc_auc_score
 
 
 # ============================================
@@ -33,6 +38,8 @@ TOTAL_CLIENTS = 4
 LOG_DIR = "logs"
 SERVER_LOG_PATH = os.path.join(LOG_DIR, "server.log")
 METRICS_PATH = os.path.join(LOG_DIR, "metrics.jsonl")
+GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
+IMAGE_ROOT = "dataset/raw/ISIC_2019_Training_Input"
 
 
 def _trend_arrow(curr, prev, higher_is_better=True):
@@ -114,19 +121,62 @@ def _log(message):
         f.write(line + "\n")
 
 
+def _evaluate_global_test(weights) -> Tuple[float, float, float, float]:
+    test_gen = prepare_global_test_generator(
+        GLOBAL_TEST_CSV,
+        IMAGE_ROOT,
+    )
+
+    num_classes = len(test_gen.class_indices)
+    model = build_model(num_classes=num_classes)
+    model.set_weights(weights)
+
+    eval_results = model.evaluate(test_gen, verbose=0)
+    if isinstance(eval_results, (list, tuple)):
+        loss = float(eval_results[0])
+        accuracy = float(eval_results[1]) if len(eval_results) > 1 else 0.0
+    else:
+        loss = float(eval_results)
+        accuracy = 0.0
+
+    y_true = []
+    y_prob = []
+    for i in range(len(test_gen)):
+        x_batch, y_batch = test_gen[i]
+        y_pred = model.predict(x_batch, verbose=0)
+        y_true.append(y_batch)
+        y_prob.append(y_pred)
+
+    y_true = np.concatenate(y_true, axis=0)
+    y_prob = np.concatenate(y_prob, axis=0)
+
+    y_true_labels = np.argmax(y_true, axis=1)
+    y_pred_labels = np.argmax(y_prob, axis=1)
+
+    f1 = float(f1_score(y_true_labels, y_pred_labels, average="macro", zero_division=0))
+    try:
+        auc = float(roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro"))
+    except ValueError:
+        auc = 0.0
+
+    return loss, accuracy, f1, auc
+
+
 # ============================================
 # CUSTOM FEDPROX STRATEGY
 # ============================================
 
 class FedProxStrategy(fl.server.strategy.FedAvg):
 
-    def __init__(self, mu=0.01, *args, **kwargs):
+    def __init__(self, mu=0.01, total_rounds=NUM_ROUNDS, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
         self.round_start_time = {}
         self.prev_metrics = None
         self.last_round_clients = []
+        self.total_rounds = total_rounds
+        self._latest_weights = None
 
     def configure_fit(self, server_round, parameters, client_manager):
         fit_config = super().configure_fit(server_round, parameters, client_manager)
@@ -196,6 +246,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
 
         aggregated_parameters = fl.common.ndarrays_to_parameters(aggregated_weights)
 
+        self._latest_weights = aggregated_weights
         self.last_round_clients = client_ids
         return aggregated_parameters, {}
 
@@ -261,6 +312,18 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
                 "roc_auc_ovr": avg_metrics.get("roc_auc_ovr", 0.0),
             }
 
+            if server_round == self.total_rounds and self._latest_weights is not None:
+                _log("Final global test evaluation starting")
+                try:
+                    loss, acc, f1, auc = _evaluate_global_test(self._latest_weights)
+                    _log(
+                        "Final global test | "
+                        f"loss={loss:.4f} | acc={acc:.4f} | "
+                        f"f1={f1:.4f} | auc={auc:.4f}"
+                    )
+                except Exception as exc:
+                    _log(f"Global test evaluation failed: {exc}")
+
         return avg_loss, avg_metrics
 
 
@@ -316,6 +379,7 @@ def start_server(args):
 
     strategy = FedProxStrategy(
         mu=0.01,
+        total_rounds=args.rounds,
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_fit,
         min_fit_clients=min_fit_clients,

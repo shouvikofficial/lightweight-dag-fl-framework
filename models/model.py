@@ -123,17 +123,31 @@ def unfreeze_model(
     learning_rate=1e-5,
     keep_batch_norm_frozen=True,
 ):
-
     # Unfreeze backbone
-    backbone = model.get_layer("backbone")
-    backbone.trainable = True
+    try:
+        backbone = model.get_layer("backbone")
+        backbone.trainable = True
+        backbone_layers = backbone.layers
+    except ValueError:
+        # Fallback: treat layers before pooling as backbone
+        cutoff_idx = None
+        for idx, layer in enumerate(model.layers):
+            if isinstance(layer, (GlobalAveragePooling2D, GlobalMaxPooling2D, Concatenate)):
+                cutoff_idx = idx
+                break
+        if cutoff_idx is None:
+            cutoff_idx = len(model.layers)
+        backbone_layers = model.layers[:cutoff_idx]
+        for layer in backbone_layers:
+            layer.trainable = True
 
     # Freeze early layers
-    for layer in backbone.layers[:fine_tune_at]:
+    fine_tune_at = min(fine_tune_at, len(backbone_layers))
+    for layer in backbone_layers[:fine_tune_at]:
         layer.trainable = False
 
     if keep_batch_norm_frozen:
-        for layer in backbone.layers:
+        for layer in backbone_layers:
             if isinstance(layer, BatchNormalization):
                 layer.trainable = False
 
