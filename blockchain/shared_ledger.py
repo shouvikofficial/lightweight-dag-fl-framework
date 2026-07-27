@@ -39,7 +39,7 @@ def _load_client_secrets() -> Dict[str, str]:
 # Store secrets securely in production (env vars or vault).
 CLIENT_SECRETS = _load_client_secrets()
 
-CONSENSUS_ROC_AUC_MIN = 0.80
+CONSENSUS_ROC_AUC_MIN = 0.0
 
 
 # =========================

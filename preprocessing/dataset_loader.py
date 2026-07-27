@@ -11,6 +11,7 @@ from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.preprocessing.image import (
     ImageDataGenerator
 )
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
 
 # ============================================
@@ -20,6 +21,17 @@ from tensorflow.keras.preprocessing.image import (
 IMAGE_SIZE = 224
 
 BATCH_SIZE = 16
+
+CLASS_NAMES = [
+    "MEL",
+    "NV",
+    "BKL",
+    "BCC",
+    "AK",
+    "VASC",
+    "DF",
+    "SCC",
+]
 
 
 # ============================================
@@ -52,10 +64,10 @@ def load_image(
         (image_size, image_size)
     )
 
-    # Normalize
-    image = image.astype(
-        np.float32
-    ) / 255.0
+    # EfficientNetB0 expects [0, 255] float32 processed via preprocess_input.
+    # Do NOT divide by 255 here — preprocess_input handles all scaling.
+    image = image.astype(np.float32)
+    image = preprocess_input(image)
 
     return image
 
@@ -289,15 +301,20 @@ def prepare_client_generators(
     )
 
     train_datagen = ImageDataGenerator(
-        rotation_range=20,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        zoom_range=0.1,
+        preprocessing_function=preprocess_input,
+        rotation_range=180,
+        width_shift_range=0.15,
+        height_shift_range=0.15,
+        zoom_range=0.15,
+        brightness_range=[0.8, 1.2],
         horizontal_flip=True,
         vertical_flip=True,
+        fill_mode="reflect",
     )
 
-    val_datagen = ImageDataGenerator()
+    val_datagen = ImageDataGenerator(
+        preprocessing_function=preprocess_input,
+    )
 
     train_generator = train_datagen.flow_from_dataframe(
         train_df,
@@ -305,6 +322,7 @@ def prepare_client_generators(
         x_col="image",
         y_col="label",
         target_size=(IMAGE_SIZE, IMAGE_SIZE),
+        classes=CLASS_NAMES,
         class_mode="categorical",
         batch_size=batch_size,
         shuffle=True,
@@ -317,6 +335,7 @@ def prepare_client_generators(
         x_col="image",
         y_col="label",
         target_size=(IMAGE_SIZE, IMAGE_SIZE),
+        classes=CLASS_NAMES,
         class_mode="categorical",
         batch_size=batch_size,
         shuffle=False,
@@ -347,7 +366,9 @@ def prepare_global_test_generator(
     if "image" not in df.columns or "label" not in df.columns:
         raise ValueError("CSV must contain 'image' and 'label' columns")
 
-    test_datagen = ImageDataGenerator()
+    test_datagen = ImageDataGenerator(
+        preprocessing_function=preprocess_input,
+    )
 
     test_generator = test_datagen.flow_from_dataframe(
         df,
@@ -355,6 +376,7 @@ def prepare_global_test_generator(
         x_col="image",
         y_col="label",
         target_size=(IMAGE_SIZE, IMAGE_SIZE),
+        classes=CLASS_NAMES,
         class_mode="categorical",
         batch_size=batch_size,
         shuffle=False,

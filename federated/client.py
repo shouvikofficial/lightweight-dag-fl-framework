@@ -6,6 +6,7 @@ from sklearn.metrics import f1_score, roc_auc_score
 from datetime import datetime
 
 from models.model import build_model, unfreeze_model
+from preprocessing.balancing import get_class_weights
 from blockchain.transaction import Transaction
 from blockchain.hashing import generate_hash
 from blockchain.shared_ledger import build_transaction
@@ -27,9 +28,10 @@ class FLClient(fl.client.NumPyClient):
         train_samples=None,
         val_samples=None,
         log_path=None,
-        fine_tune_round=5,
-        fine_tune_at=100,
-        fine_tune_lr=1e-5,
+        fine_tune_round=2,
+        fine_tune_at=120,
+        fine_tune_lr=3e-5,
+        mu=0.0,
     ):
 
         self.model = build_model()
@@ -107,6 +109,8 @@ class FLClient(fl.client.NumPyClient):
         y_true_labels = np.argmax(y_true, axis=1)
         y_pred_labels = np.argmax(y_prob, axis=1)
 
+        metrics["acc_manual"] = float(np.mean(y_true_labels == y_pred_labels))
+
         metrics["f1_macro"] = float(
             f1_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
         )
@@ -145,21 +149,60 @@ class FLClient(fl.client.NumPyClient):
             )
             self.fine_tuned = True
 
-        # Train locally
+        # Train locally with validation data & progress bar
         if self.y_train is None:
+            # ── Compute class weights from local generator data ──────────
+            # Sample a few batches to build a representative label array
+            # without loading the entire dataset into RAM.
+            y_sample_batches = []
+            sample_limit = min(len(self.x_train), 50)  # at most 50 batches
+            for i in range(sample_limit):
+                _, y_batch = self.x_train[i]
+                y_sample_batches.append(y_batch)
+            y_sample = np.concatenate(y_sample_batches, axis=0)
+            try:
+                class_weights = get_class_weights(y_sample, class_labels=list(range(8)), num_classes=8)
+                self._log(
+                    f"Class weights computed: "
+                    + " | ".join(
+                        f"cls{k}={v:.2f}" for k, v in class_weights.items()
+                    )
+                )
+            except Exception as cw_err:
+                self._log(f"[WARN] Class weights failed ({cw_err}), training unweighted")
+                class_weights = None
+
             self.model.fit(
                 self.x_train,
-                epochs=2,
+                epochs=4,
                 steps_per_epoch=self.train_steps,
-                verbose=2,
+                validation_data=self.x_test,
+                validation_steps=self.val_steps,
+                class_weight=class_weights,
+                verbose=1,
             )
         else:
+            y_train_arr = self.y_train
+            try:
+                class_weights = get_class_weights(y_train_arr, class_labels=list(range(8)), num_classes=8)
+                self._log(
+                    f"Class weights computed: "
+                    + " | ".join(
+                        f"cls{k}={v:.2f}" for k, v in class_weights.items()
+                    )
+                )
+            except Exception as cw_err:
+                self._log(f"[WARN] Class weights failed ({cw_err}), training unweighted")
+                class_weights = None
+
             self.model.fit(
                 self.x_train,
                 self.y_train,
-                epochs=2,
+                epochs=4,
                 batch_size=32,
-                verbose=2,
+                validation_data=(self.x_test, self.y_test),
+                class_weight=class_weights,
+                verbose=1,
             )
 
         # Get updated weights
@@ -183,7 +226,10 @@ class FLClient(fl.client.NumPyClient):
 
         y_true, y_prob = self._collect_eval_data()
         metrics.update(self._compute_extra_metrics(y_true, y_prob))
-        accuracy = metrics.get("accuracy", metrics.get("categorical_accuracy", 0.0))
+        accuracy = metrics.get(
+            "accuracy",
+            metrics.get("categorical_accuracy", metrics.get("acc_manual", 0.0)),
+        )
 
         self._log(
             "Local training done | "
@@ -278,7 +324,32 @@ class FLClient(fl.client.NumPyClient):
 
         y_true, y_prob = self._collect_eval_data()
         metrics.update(self._compute_extra_metrics(y_true, y_prob))
-        accuracy = metrics.get("accuracy", metrics.get("categorical_accuracy", 0.0))
+        accuracy = metrics.get(
+            "accuracy",
+            metrics.get("categorical_accuracy", metrics.get("acc_manual", 0.0)),
+        )
+        metrics["accuracy"] = float(accuracy)
+
+        if accuracy == 0.0:
+            y_true_labels = np.argmax(y_true, axis=1)
+            y_pred_labels = np.argmax(y_prob, axis=1)
+            acc_manual = float(np.mean(y_true_labels == y_pred_labels))
+            true_counts = np.bincount(y_true_labels, minlength=y_prob.shape[1])
+            pred_counts = np.bincount(y_pred_labels, minlength=y_prob.shape[1])
+            self._log(
+                "Eval debug | "
+                f"acc_manual={acc_manual:.6f} | "
+                f"metrics_names={self.model.metrics_names}"
+            )
+            self._log(
+                "Eval debug | "
+                f"eval_results={eval_results}"
+            )
+            self._log(
+                "Eval debug | "
+                f"true_counts={true_counts.tolist()} | "
+                f"pred_counts={pred_counts.tolist()}"
+            )
 
         num_examples = (
             self.val_samples

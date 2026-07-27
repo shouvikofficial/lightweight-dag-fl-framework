@@ -128,6 +128,13 @@ def start_client(client_id, server_address):
         f"Train samples: {train_samples} | Val samples: {val_samples}",
     )
 
+    import pandas as pd
+    df_part = pd.read_csv(csv_path)
+    if "label" in df_part.columns:
+        counts = df_part["label"].value_counts().to_dict()
+        class_str = " | ".join([f"{k}: {v}" for k, v in counts.items()])
+        _log(client_id, f"Class Distribution: {class_str}")
+
     # ========================================
     # SETUP BLOCKCHAIN
     # ========================================

@@ -5,6 +5,7 @@ import pandas as pd
 
 from sklearn.preprocessing import LabelEncoder
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
 
 # ============================================
@@ -55,8 +56,10 @@ def preprocess_image(
         (image_size, image_size)
     )
 
-    # Normalize
-    image = image.astype("float32") / 255.0
+    # EfficientNetB0 has an internal Rescaling layer trained on [0, 255].
+    # preprocess_input converts uint8 [0,255] -> float32 [-1, 1] as expected.
+    image = image.astype("float32")
+    image = preprocess_input(image)
 
     return image
 

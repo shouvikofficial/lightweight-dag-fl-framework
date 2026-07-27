@@ -7,17 +7,12 @@ from sklearn.utils.class_weight import compute_class_weight
 def get_class_weights(
     labels: np.ndarray,
     class_labels: Optional[Iterable[int]] = None,
+    num_classes: int = 8,
 ) -> Dict[int, float]:
     """Compute balanced class weights for integer or one-hot labels.
 
-    Args:
-        labels: Array of shape (n_samples,) with integer labels, or
-            (n_samples, n_classes) with one-hot or probability-like labels.
-        class_labels: Optional iterable of class ids to include. If omitted,
-            classes are inferred from the data.
-
-    Returns:
-        Mapping of class id to weight.
+    Ensures all expected class IDs (0..num_classes-1) receive a valid float weight,
+    even if rare classes are absent from a local batch sample.
     """
 
     if labels is None:
@@ -31,20 +26,37 @@ def get_class_weights(
         y_int = y.astype(int)
     elif y.ndim == 2:
         y_int = np.argmax(y, axis=1).astype(int)
+        num_classes = max(num_classes, y.shape[1])
     else:
         raise ValueError("labels must be 1D or 2D array")
 
     if class_labels is None:
-        classes = np.unique(y_int)
+        target_classes = np.arange(num_classes)
     else:
-        classes = np.asarray(list(class_labels), dtype=int)
-        if classes.size == 0:
+        target_classes = np.asarray(list(class_labels), dtype=int)
+        if target_classes.size == 0:
             raise ValueError("class_labels must not be empty")
 
-    weights = compute_class_weight(
-        class_weight="balanced",
-        classes=classes,
-        y=y_int,
-    )
+    n_samples = len(y_int)
+    n_classes = len(target_classes)
 
-    return {int(c): float(w) for c, w in zip(classes, weights)}
+    counts = np.bincount(y_int, minlength=max(target_classes) + 1)
+
+    weights = {}
+    max_observed_w = 1.0
+    for c in target_classes:
+        cnt = counts[c] if c < len(counts) else 0
+        if cnt > 0:
+            w = n_samples / (n_classes * float(cnt))
+            weights[int(c)] = float(w)
+            if w > max_observed_w:
+                max_observed_w = w
+        else:
+            weights[int(c)] = -1.0
+
+    # Fill zero-count classes with the max observed weight cap
+    for c in target_classes:
+        if weights[int(c)] < 0:
+            weights[int(c)] = float(max_observed_w)
+
+    return weights

@@ -1,17 +1,4 @@
-import tensorflow as tf
-
-from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import (
-    Dense,
-    Dropout,
-    GlobalAveragePooling2D,
-    GlobalMaxPooling2D,
-    BatchNormalization,
-    Concatenate,
-)
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.regularizers import l2
+from tensorflow.keras.applications import EfficientNetB0, DenseNet121, ResNet50V2
 
 
 # ============================================
@@ -19,26 +6,41 @@ from tensorflow.keras.regularizers import l2
 # ============================================
 
 def build_model(
+    model_name="densenet121",
     input_shape=(224, 224, 3),
     num_classes=8,
     dropout_rate_head=0.4,
     dropout_rate_dense=0.3,
-    l2_strength=1e-3,
-    label_smoothing=0.05,
+    l2_strength=1e-4,
     learning_rate=1e-4,
     auc_name="auc",
 ):
 
     # ========================================
-    # LOAD PRETRAINED EFFICIENTNETB0
+    # LOAD PRETRAINED BACKBONE
     # ========================================
-
-    base_model = EfficientNetB0(
-        weights="imagenet",
-        include_top=False,
-        input_shape=input_shape,
-        name="backbone",
-    )
+    model_name_lower = str(model_name).lower()
+    if "densenet" in model_name_lower:
+        base_model = DenseNet121(
+            weights="imagenet",
+            include_top=False,
+            input_shape=input_shape,
+            name="backbone",
+        )
+    elif "resnet" in model_name_lower:
+        base_model = ResNet50V2(
+            weights="imagenet",
+            include_top=False,
+            input_shape=input_shape,
+            name="backbone",
+        )
+    else:
+        base_model = EfficientNetB0(
+            weights="imagenet",
+            include_top=False,
+            input_shape=input_shape,
+            name="backbone",
+        )
 
     # ========================================
     # FREEZE BACKBONE INITIALLY
@@ -101,8 +103,13 @@ def build_model(
 
     model.compile(
         optimizer=Adam(learning_rate=learning_rate),
-        loss=tf.keras.losses.CategoricalCrossentropy(
-            label_smoothing=label_smoothing
+        # Focal Loss: down-weights easy majority-class (NV) examples and
+        # focuses gradient signal on hard minority-class misclassifications.
+        # gamma=2.0 is the standard choice; alpha=0.25 balances positives.
+        loss=tf.keras.losses.CategoricalFocalCrossentropy(
+            alpha=0.25,
+            gamma=2.0,
+            from_logits=False,
         ),
         metrics=[
             "accuracy",
@@ -119,7 +126,7 @@ def build_model(
 
 def unfreeze_model(
     model,
-    fine_tune_at=100,
+    fine_tune_at=120,
     learning_rate=1e-5,
     keep_batch_norm_frozen=True,
 ):
@@ -154,7 +161,11 @@ def unfreeze_model(
     # Recompile
     model.compile(
         optimizer=Adam(learning_rate=learning_rate),
-        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
+        loss=tf.keras.losses.CategoricalFocalCrossentropy(
+            alpha=0.25,
+            gamma=2.0,
+            from_logits=False,
+        ),
         metrics=[
             "accuracy",
             tf.keras.metrics.AUC(name="auc", multi_label=False),

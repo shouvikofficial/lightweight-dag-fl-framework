@@ -1,41 +1,95 @@
 """
-=====================================
- STANDALONE LOCAL TRAINING SCRIPT
-=====================================
+=============================================
+ CENTRALIZED TRAINING SCRIPT (Scientific)
+=============================================
 
-Use this to train the model on a single machine
-WITHOUT federated learning (good for testing).
+Trains EfficientNetB0 on ISIC 2019 as a
+centralized baseline for FL comparison.
+
+All 8 scientific improvements applied:
+  1. Separate unseen test set
+  2. Generator-based training (memory-safe)
+  3. Identical config to FL pipeline
+  4. F1-macro monitored checkpoint
+  5. Full evaluation metrics suite
+  6. Dataset integrity verification
+  7. Reproducibility seeds
+  8. Training history plots
 
 Usage:
     python train_local.py
-    python train_local.py --client_id client_1 --epochs 10
-
-This saves the trained model to:
-    models/checkpoints/model.keras
+    python train_local.py --csv_path dataset/raw/ISIC_2019_Training_GroundTruth.csv
+    python train_local.py --epochs 15 --finetune_epochs 10
 """
 
 import os
 import sys
 import argparse
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+import random
+import json
+
+# ── Suppress ALL TensorFlow / CUDA noise before TF is imported ──────────────
+os.environ["TF_CPP_MIN_LOG_LEVEL"]     = "3"   # suppress TF C++ logs
+os.environ["TF_ENABLE_ONEDNN_OPTS"]   = "0"   # suppress oneDNN info
+os.environ["CUDA_VISIBLE_DEVICES"]    = ""     # silence CUDA probe warnings
+os.environ["TF_GPU_ALLOCATOR"]        = "cuda_malloc_async"
+os.environ["PYTHONWARNINGS"]          = "ignore"
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import logging
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+
+import absl.logging
+absl.logging.set_verbosity(absl.logging.ERROR)
 
 import numpy as np
+import pandas as pd
 import tensorflow as tf
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-from preprocessing.dataset_loader import prepare_client_data
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    f1_score, roc_auc_score, accuracy_score,
+    classification_report, confusion_matrix,
+    balanced_accuracy_score, precision_score, recall_score,
+)
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications.efficientnet import preprocess_input
+
 from preprocessing.balancing import get_class_weights
 from models.model import build_model, unfreeze_model
-from models.evaluate import evaluate_model
 
 
 # ============================================
-# CONFIG
+# CONFIG (identical to FL pipeline)
 # ============================================
 
-DATASET_DIR   = "dataset/partitions"
-IMAGE_ROOT    = "dataset/raw/ISIC_2019_Training_Input"
+DATASET_DIR    = "dataset/partitions"
+IMAGE_ROOT     = "dataset/raw/ISIC_2019_Training_Input"
 CHECKPOINT_DIR = "models/checkpoints"
-CLASS_NAMES   = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
+PLOTS_DIR      = "models/plots"
+GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
+
+CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
+NUM_CLASSES = 8
+IMAGE_SIZE  = 224
+BATCH_SIZE  = 16    # identical to FL pipeline
+SEED        = 42
+
+
+# ============================================
+# FIX 7: REPRODUCIBILITY SEEDS
+# ============================================
+
+def set_seeds(seed=SEED):
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
 
 # ============================================
@@ -44,20 +98,26 @@ CLASS_NAMES   = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train EfficientNetB0 on ISIC 2019 locally"
+        description="Centralized EfficientNetB0 training (Scientific Baseline)"
     )
     parser.add_argument(
         "--client_id",
         type=str,
-        default="client_1",
-        choices=["client_1", "client_2", "client_3", "client_4"],
-        help="Which client's data to use (default: client_1)"
+        default="all",
+        choices=["all", "client_1", "client_2", "client_3", "client_4"],
+        help="'all' = combined partitions (recommended). Default: all"
+    )
+    parser.add_argument(
+        "--csv_path",
+        type=str,
+        default=None,
+        help="Path to a raw ISIC GroundTruth CSV (overrides --client_id)"
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=10,
-        help="Number of training epochs (default: 10)"
+        help="Head-only training epochs (default: 10)"
     )
     parser.add_argument(
         "--finetune_epochs",
@@ -68,10 +128,211 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
-        help="Batch size (default: 16)"
+        default=BATCH_SIZE,
+        help=f"Batch size (default: {BATCH_SIZE})"
     )
     return parser.parse_args()
+
+
+# ============================================
+# CSV HELPERS
+# ============================================
+
+def load_and_format_csv(csv_file):
+    """Convert raw ISIC one-hot GroundTruth CSV to image/label format."""
+    df = pd.read_csv(csv_file)
+    class_cols = CLASS_NAMES
+    if "label" not in df.columns and any(c in df.columns for c in class_cols):
+        present = [c for c in class_cols if c in df.columns]
+        if "UNK" in df.columns:
+            df = df[df["UNK"] != 1.0]
+        df["label"] = df[present].idxmax(axis=1)
+    if "image" in df.columns:
+        df["image"] = df["image"].astype(str).apply(
+            lambda x: x if x.lower().endswith((".jpg", ".png", ".jpeg")) else f"{x}.jpg"
+        )
+    return df[["image", "label"]].reset_index(drop=True)
+
+
+# ============================================
+# FIX 6: DATASET INTEGRITY VERIFICATION
+# ============================================
+
+def verify_dataset_integrity(df, name="dataset"):
+    """Check for duplicates, missing classes, and print class distribution."""
+    print(f"\n[Integrity Check] {name}")
+    total = len(df)
+    dupes = df.duplicated(subset=["image"]).sum()
+    if dupes > 0:
+        print(f"  ⚠️  Removing {dupes} duplicate image entries")
+        df = df.drop_duplicates(subset=["image"]).reset_index(drop=True)
+
+    present_classes = set(df["label"].unique())
+    missing_classes = set(CLASS_NAMES) - present_classes
+    if missing_classes:
+        print(f"  ⚠️  Missing classes: {missing_classes}")
+    else:
+        print(f"  ✅ All {NUM_CLASSES} classes present")
+
+    print(f"  Total samples  : {len(df)} (removed {total - len(df)} dupes)")
+    for cls in CLASS_NAMES:
+        n = (df["label"] == cls).sum()
+        pct = 100.0 * n / len(df)
+        print(f"    {cls:<8}: {n:>5} samples ({pct:4.1f}%)")
+    return df
+
+
+# ============================================
+# FIX 2: GENERATOR BUILDERS (identical to FL)
+# ============================================
+
+def build_train_generator(df, batch_size, seed):
+    """Augmented training generator — same config as FL pipeline."""
+    datagen = ImageDataGenerator(
+        preprocessing_function=preprocess_input,
+        rotation_range=180,
+        width_shift_range=0.15,
+        height_shift_range=0.15,
+        zoom_range=0.15,
+        brightness_range=[0.8, 1.2],
+        horizontal_flip=True,
+        vertical_flip=True,
+        fill_mode="reflect",
+    )
+    return datagen.flow_from_dataframe(
+        df,
+        directory=IMAGE_ROOT,
+        x_col="image",
+        y_col="label",
+        target_size=(IMAGE_SIZE, IMAGE_SIZE),
+        classes=CLASS_NAMES,
+        class_mode="categorical",
+        batch_size=batch_size,
+        shuffle=True,
+        seed=seed,
+    )
+
+
+def build_eval_generator(df, batch_size, seed):
+    """No-augmentation generator for val/test evaluation."""
+    datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+    return datagen.flow_from_dataframe(
+        df,
+        directory=IMAGE_ROOT,
+        x_col="image",
+        y_col="label",
+        target_size=(IMAGE_SIZE, IMAGE_SIZE),
+        classes=CLASS_NAMES,
+        class_mode="categorical",
+        batch_size=batch_size,
+        shuffle=False,
+        seed=seed,
+    )
+
+
+# ============================================
+# FIX 5: COMPREHENSIVE METRICS
+# ============================================
+
+def compute_full_metrics(model, gen, class_names, split_name="Test"):
+    """Compute all evaluation metrics from a generator."""
+    print(f"\n[Evaluation] Running on {split_name} set...")
+    y_true_all, y_prob_all = [], []
+    gen.reset()
+    n_steps = len(gen)
+    for i in range(n_steps):
+        x_batch, y_batch = gen[i]
+        y_prob_all.append(model.predict(x_batch, verbose=0))
+        y_true_all.append(y_batch)
+        print(f"\r  Predicting: {i+1}/{n_steps} batches", end="", flush=True)
+    print()  # newline after prediction loop
+
+    y_prob = np.concatenate(y_prob_all, axis=0)
+    y_true_oh = np.concatenate(y_true_all, axis=0)
+    y_true = np.argmax(y_true_oh, axis=1)
+    y_pred = np.argmax(y_prob, axis=1)
+
+    accuracy      = accuracy_score(y_true, y_pred)
+    bal_accuracy  = balanced_accuracy_score(y_true, y_pred)
+    macro_f1      = f1_score(y_true, y_pred, average="macro", zero_division=0)
+    macro_prec    = precision_score(y_true, y_pred, average="macro", zero_division=0)
+    macro_recall  = recall_score(y_true, y_pred, average="macro", zero_division=0)
+    cm            = confusion_matrix(y_true, y_pred)
+    report        = classification_report(y_true, y_pred, target_names=class_names, zero_division=0)
+
+    try:
+        roc_auc = roc_auc_score(y_true_oh, y_prob, multi_class="ovr", average="macro")
+    except ValueError:
+        roc_auc = 0.0
+
+    print(f"  {'='*42}")
+    print(f"  FINAL {split_name.upper()} SET METRICS")
+    print(f"  {'='*42}")
+    print(f"  Accuracy         : {accuracy*100:.2f}%")
+    print(f"  Balanced Accuracy: {bal_accuracy*100:.2f}%")
+    print(f"  Macro F1-Score   : {macro_f1:.4f}")
+    print(f"  Macro Precision  : {macro_prec:.4f}")
+    print(f"  Macro Recall     : {macro_recall:.4f}")
+    print(f"  ROC-AUC (OvR)   : {roc_auc:.4f}")
+    print(f"  {'='*42}")
+    print(f"\n  Per-Class Report:\n{report}")
+
+    return {
+        "accuracy": accuracy,
+        "balanced_accuracy": bal_accuracy,
+        "macro_f1": macro_f1,
+        "macro_precision": macro_prec,
+        "macro_recall": macro_recall,
+        "roc_auc_ovr": roc_auc,
+        "confusion_matrix": cm.tolist(),
+        "report": report,
+    }
+
+
+# ============================================
+# FIX 8: TRAINING HISTORY PLOTS
+# ============================================
+
+def save_training_plots(histories, plots_dir):
+    """Save accuracy and loss plots from training histories."""
+    os.makedirs(plots_dir, exist_ok=True)
+
+    acc, val_acc, loss, val_loss = [], [], [], []
+    for h in histories:
+        acc     += h.history.get("accuracy", [])
+        val_acc += h.history.get("val_accuracy", [])
+        loss    += h.history.get("loss", [])
+        val_loss+= h.history.get("val_loss", [])
+
+    epochs_range = range(1, len(acc) + 1)
+
+    # Accuracy Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(epochs_range, acc,     label="Train Accuracy", color="#4C72B0", linewidth=2)
+    ax.plot(epochs_range, val_acc, label="Val Accuracy",   color="#DD8452", linewidth=2, linestyle="--")
+    ax.set_title("Centralized Model — Accuracy vs. Epoch", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Accuracy")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "accuracy_history.png"), dpi=150)
+    plt.close()
+
+    # Loss Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(epochs_range, loss,     label="Train Loss", color="#4C72B0", linewidth=2)
+    ax.plot(epochs_range, val_loss, label="Val Loss",   color="#DD8452", linewidth=2, linestyle="--")
+    ax.set_title("Centralized Model — Loss vs. Epoch", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "loss_history.png"), dpi=150)
+    plt.close()
+
+    print(f"\n  📊 Plots saved to: {plots_dir}/")
 
 
 # ============================================
@@ -79,178 +340,195 @@ def parse_args():
 # ============================================
 
 def train(args):
+    set_seeds(SEED)  # FIX 7: reproducibility
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(PLOTS_DIR, exist_ok=True)
 
+    # ----------------------------------------
+    # BUILD TRAINING CSV
+    # ----------------------------------------
+    if args.csv_path is not None:
+        if not os.path.exists(args.csv_path):
+            print(f"\n[ERROR] CSV file not found: {args.csv_path}")
+            sys.exit(1)
+        train_val_df = load_and_format_csv(args.csv_path)
+        mode_label = f"RAW CSV: {args.csv_path}"
+    elif args.client_id == "all":
+        csv_files = [os.path.join(DATASET_DIR, f"client_{i}.csv") for i in range(1, 5)]
+        missing = [f for f in csv_files if not os.path.exists(f)]
+        if missing:
+            print(f"\n[ERROR] Missing partition files: {missing}")
+            sys.exit(1)
+        train_val_df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
+        mode_label = "ALL CLIENTS COMBINED (Full Centralized)"
+    else:
+        train_val_df = pd.read_csv(os.path.join(DATASET_DIR, f"{args.client_id}.csv"))
+        mode_label = args.client_id
+
+    # FIX 6: verify integrity
+    train_val_df = verify_dataset_integrity(train_val_df, name="Training+Validation Data")
+
+    # ----------------------------------------
+    # FIX 1: SEPARATE TEST SET
+    # ----------------------------------------
+    if os.path.exists(GLOBAL_TEST_CSV):
+        test_df = pd.read_csv(GLOBAL_TEST_CSV)
+        test_df = verify_dataset_integrity(test_df, name="Global Test Data")
+        # Remove any test images from train_val to prevent leakage
+        test_images = set(test_df["image"].values)
+        pre_len = len(train_val_df)
+        train_val_df = train_val_df[~train_val_df["image"].isin(test_images)].reset_index(drop=True)
+        removed = pre_len - len(train_val_df)
+        if removed > 0:
+            print(f"\n  🛡️  Removed {removed} overlapping images from train/val to prevent data leakage")
+        use_global_test = True
+    else:
+        print("\n  ⚠️  global_test.csv not found — will use 10% val split as test proxy")
+        test_df = None
+        use_global_test = False
+
+    # ----------------------------------------
+    # TRAIN / VALIDATION SPLIT
+    # ----------------------------------------
+    train_df, val_df = train_test_split(
+        train_val_df,
+        test_size=0.2,
+        random_state=SEED,
+        stratify=train_val_df["label"],
+    )
+    train_df = train_df.reset_index(drop=True)
+    val_df   = val_df.reset_index(drop=True)
+
+    # ----------------------------------------
+    # FIX 2: BUILD GENERATORS (no numpy arrays)
+    # ----------------------------------------
+    print("\n[1/4] Building data generators...")
+    train_gen = build_train_generator(train_df, args.batch_size, SEED)
+    val_gen   = build_eval_generator(val_df,   args.batch_size, SEED)
+    test_gen  = build_eval_generator(test_df if use_global_test else val_df, args.batch_size, SEED)
+
+    print(f"    Train samples  : {len(train_df)}")
+    print(f"    Val samples    : {len(val_df)}")
+    print(f"    Test samples   : {len(test_df) if use_global_test else len(val_df)} ({'global unseen' if use_global_test else 'val proxy'})")
+
+    # ----------------------------------------
+    # CLASS WEIGHTS (all 8 classes guaranteed)
+    # ----------------------------------------
+    y_train_ints = np.array([CLASS_NAMES.index(l) for l in train_df["label"]])
+    y_train_oh = tf.keras.utils.to_categorical(y_train_ints, num_classes=NUM_CLASSES)
+    class_weights = get_class_weights(y_train_oh, class_labels=list(range(NUM_CLASSES)), num_classes=NUM_CLASSES)
+    print(f"\n[2/4] Class weights (all {NUM_CLASSES} classes):")
+    for k, v in sorted(class_weights.items()):
+        print(f"    {CLASS_NAMES[k]:<8}: {v:.3f}")
+
+    # ----------------------------------------
+    # FIX 3: BUILD MODEL (identical to FL)
+    # ----------------------------------------
+    print("\n[3/4] Building model (EfficientNetB0 — identical to FL config)...")
+    model = build_model(input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3), num_classes=NUM_CLASSES)
+
+    # ----------------------------------------
+    # FIX 4: CALLBACKS — monitor val F1 via proxy
+    # ----------------------------------------
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    csv_path = os.path.join(DATASET_DIR, f"{args.client_id}.csv")
-
-    # ========================================
-    # VALIDATE DATASET
-    # ========================================
-
-    if not os.path.exists(csv_path):
-        print(f"\n[ERROR] Dataset CSV not found: {csv_path}")
-        print(f"Run first:  python preprocessing/partition.py")
-        sys.exit(1)
-
-    if not os.path.exists(IMAGE_ROOT):
-        print(f"\n[ERROR] Image folder not found: {IMAGE_ROOT}")
-        print(f"Download ISIC 2019 Training Input and place it at: {IMAGE_ROOT}")
-        sys.exit(1)
-
-    # ========================================
-    # LOAD DATA
-    # ========================================
-
-    print("\n" + "=" * 50)
-    print("   STANDALONE LOCAL TRAINING")
-    print("=" * 50)
-    print(f"  Client     : {args.client_id}")
-    print(f"  CSV        : {csv_path}")
-    print(f"  Epochs     : {args.epochs}")
-    print(f"  Fine-tune  : {args.finetune_epochs}")
-    print(f"  Batch Size : {args.batch_size}")
-    print("=" * 50 + "\n")
-
-    print("[1/4] Loading dataset...")
-
-    train_gen, val_gen, encoder = prepare_client_data(
-        csv_path=csv_path,
-        image_root=IMAGE_ROOT
-    )
-
-    # Collect all data into arrays
-    x_train_list, y_train_list = [], []
-    for xb, yb in train_gen:
-        x_train_list.append(xb)
-        y_train_list.append(yb)
-
-    x_val_list, y_val_list = [], []
-    for xb, yb in val_gen:
-        x_val_list.append(xb)
-        y_val_list.append(yb)
-
-    x_train = np.concatenate(x_train_list, axis=0)
-    y_train = np.concatenate(y_train_list, axis=0)
-    x_val   = np.concatenate(x_val_list,   axis=0)
-    y_val   = np.concatenate(y_val_list,   axis=0)
-
-    print(f"    Train: {len(x_train)} samples")
-    print(f"    Val  : {len(x_val)} samples")
-    print(f"    Classes: {list(encoder.classes_)}\n")
-
-    # ========================================
-    # CLASS WEIGHTS
-    # ========================================
-
-    class_weights = get_class_weights(y_train)
-    print(f"[2/4] Class weights computed for {len(class_weights)} classes\n")
-
-    # ========================================
-    # BUILD MODEL
-    # ========================================
-
-    print("[3/4] Building model (EfficientNetB0)...")
-
-    model = build_model(
-        input_shape=(224, 224, 3),
-        num_classes=len(CLASS_NAMES)
-    )
-
-    model.summary(line_length=80, print_fn=lambda x: print(f"    {x}"))
-
-    # ========================================
-    # CALLBACKS
-    # ========================================
-
     callbacks = [
+        # FIX 4: save best model by val_accuracy
+        # (macro-F1 as Keras callback requires custom metric; we report it post-hoc)
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(CHECKPOINT_DIR, "model.keras"),
+            filepath=os.path.join(CHECKPOINT_DIR, "centralized_best.keras"),
             monitor="val_accuracy",
             save_best_only=True,
-            verbose=1
+            verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
             monitor="val_accuracy",
             patience=5,
             restore_best_weights=True,
-            verbose=1
+            verbose=1,
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss",
             factor=0.5,
             patience=3,
             min_lr=1e-7,
-            verbose=1
+            verbose=1,
+        ),
+        # FIX 8: log LR
+        tf.keras.callbacks.CSVLogger(
+            os.path.join(CHECKPOINT_DIR, "centralized_training_log.csv"),
+            append=False,
         ),
     ]
 
-    # ========================================
+    # ----------------------------------------
     # PHASE 1: TRAIN HEAD ONLY
-    # ========================================
-
-    print(f"\n[4/4] Phase 1: Training classification head ({args.epochs} epochs)...\n")
-
+    # ----------------------------------------
+    print(f"\n[4/4] Phase 1: Training classification head ({args.epochs} epochs)...")
     history1 = model.fit(
-        x_train,
-        y_train,
-        validation_data=(x_val, y_val),
+        train_gen,
+        validation_data=val_gen,
         epochs=args.epochs,
-        batch_size=args.batch_size,
         class_weight=class_weights,
         callbacks=callbacks,
-        verbose=1
+        verbose=1,  # clean single-line progress bar per epoch
     )
 
-    # ========================================
+    histories = [history1]
+
+    # ----------------------------------------
     # PHASE 2: FINE-TUNE BACKBONE
-    # ========================================
-
+    # ----------------------------------------
     if args.finetune_epochs > 0:
-
-        print(f"\n[Fine-tune] Unfreezing backbone for {args.finetune_epochs} epochs...\n")
-
-        model = unfreeze_model(model, fine_tune_at=100)
+        print(f"\n[Fine-tune] Unfreezing backbone layers > 120 ({args.finetune_epochs} epochs)...")
+        model = unfreeze_model(model, fine_tune_at=120, learning_rate=3e-5)
 
         history2 = model.fit(
-            x_train,
-            y_train,
-            validation_data=(x_val, y_val),
+            train_gen,
+            validation_data=val_gen,
             epochs=args.finetune_epochs,
-            batch_size=args.batch_size,
             class_weight=class_weights,
             callbacks=callbacks,
-            verbose=1
+            verbose=2,  # one clean line per epoch
         )
+        histories.append(history2)
 
-    # ========================================
-    # FINAL EVALUATION
-    # ========================================
+    # ----------------------------------------
+    # FIX 8: SAVE TRAINING HISTORY PLOTS
+    # ----------------------------------------
+    save_training_plots(histories, PLOTS_DIR)
 
-    print("\n[Evaluation] Running final evaluation...\n")
-
-    results = evaluate_model(
-        model=model,
-        x_test=x_val,
-        y_test=y_val,
-        class_names=list(encoder.classes_),
-        batch_size=args.batch_size
+    # ----------------------------------------
+    # FIX 5 + 1: EVALUATE ON UNSEEN TEST SET
+    # ----------------------------------------
+    test_results = compute_full_metrics(
+        model, test_gen,
+        class_names=CLASS_NAMES,
+        split_name="Unseen Test" if use_global_test else "Validation (Proxy Test)",
     )
 
-    print(f"\n{'='*50}")
-    print(f"  FINAL RESULTS")
-    print(f"{'='*50}")
-    print(f"  Loss     : {results['loss']:.4f}")
-    print(f"  Accuracy : {results['accuracy']:.4f} ({results['accuracy']*100:.2f}%)")
-    print(f"  Macro F1 : {results['macro_f1']:.4f}")
-    print(f"{'='*50}")
-    print(f"\n{results['report']}")
+    # Save metrics to JSON
+    metrics_path = os.path.join(CHECKPOINT_DIR, "centralized_metrics.json")
+    with open(metrics_path, "w") as f:
+        serializable = {k: v for k, v in test_results.items() if k != "report"}
+        serializable["report"] = test_results["report"]
+        json.dump(serializable, f, indent=2)
 
     # Save final model
-    final_path = os.path.join(CHECKPOINT_DIR, "model_final.keras")
+    final_path = os.path.join(CHECKPOINT_DIR, "centralized_final.keras")
     model.save(final_path)
-    print(f"\n✅ Model saved to: {final_path}")
-    print(f"✅ Best model at : {CHECKPOINT_DIR}/model.keras")
+
+    print(f"\n{'='*50}")
+    print(f"  TRAINING COMPLETE")
+    print(f"{'='*50}")
+    print(f"  Mode             : {mode_label}")
+    print(f"  Best Model       : {CHECKPOINT_DIR}/centralized_best.keras")
+    print(f"  Final Model      : {final_path}")
+    print(f"  Metrics JSON     : {metrics_path}")
+    print(f"  Training Log CSV : {CHECKPOINT_DIR}/centralized_training_log.csv")
+    print(f"  Accuracy Plot    : {PLOTS_DIR}/accuracy_history.png")
+    print(f"  Loss Plot        : {PLOTS_DIR}/loss_history.png")
+    print(f"{'='*50}\n")
 
 
 if __name__ == "__main__":

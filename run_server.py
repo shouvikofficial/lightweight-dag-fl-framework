@@ -33,7 +33,7 @@ from sklearn.metrics import f1_score, roc_auc_score
 # ============================================
 
 SERVER_ADDRESS = "0.0.0.0:8080"
-NUM_ROUNDS = 20
+NUM_ROUNDS = 35
 TOTAL_CLIENTS = 4
 LOG_DIR = "logs"
 SERVER_LOG_PATH = os.path.join(LOG_DIR, "server.log")
@@ -152,6 +152,7 @@ def _evaluate_global_test(weights) -> Tuple[float, float, float, float]:
 
     y_true_labels = np.argmax(y_true, axis=1)
     y_pred_labels = np.argmax(y_prob, axis=1)
+    accuracy = float(np.mean(y_true_labels == y_pred_labels))
 
     f1 = float(f1_score(y_true_labels, y_pred_labels, average="macro", zero_division=0))
     try:
@@ -210,12 +211,9 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         client_sizes = []
         client_ids = []
         for _, fit_res in results:
-            client_weights.append(
-                fl.common.parameters_to_ndarrays(fit_res.parameters)
-            )
-            client_sizes.append(fit_res.num_examples)
-            client_ids.append(fit_res.metrics.get("client_id", "unknown"))
-
+            client_id = fit_res.metrics.get("client_id", "unknown")
+            is_valid = True
+            
             tx_json = fit_res.metrics.get("transaction")
             if tx_json:
                 try:
@@ -229,10 +227,22 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
 
                     if status.get("validated"):
                         _log("[BLOCKCHAIN] Update accepted")
+                        is_valid = True
                     else:
                         _log("[BLOCKCHAIN] Update rejected")
+                        is_valid = False
                 except json.JSONDecodeError:
                     _log("[BLOCKCHAIN] Transaction parse failed")
+                    is_valid = False
+
+            # ONLY append to aggregation list if the Blockchain accepted it!
+            if is_valid:
+                client_weights.append(
+                    fl.common.parameters_to_ndarrays(fit_res.parameters)
+                )
+                client_sizes.append(fit_res.num_examples)
+                client_ids.append(client_id)
+
 
         _log(
             "Received updates from: "
@@ -378,7 +388,7 @@ def start_server(args):
     fraction_fit = args.fraction_fit if args.fraction_fit is not None else 1.0
 
     strategy = FedProxStrategy(
-        mu=0.01,
+        mu=0.0,
         total_rounds=args.rounds,
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_fit,
