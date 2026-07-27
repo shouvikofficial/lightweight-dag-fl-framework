@@ -121,14 +121,14 @@ def _log(message):
         f.write(line + "\n")
 
 
-def _evaluate_global_test(weights) -> Tuple[float, float, float, float]:
+def _evaluate_global_test(weights, model_name="densenet121") -> Tuple[float, float, float, float]:
     test_gen = prepare_global_test_generator(
         GLOBAL_TEST_CSV,
         IMAGE_ROOT,
     )
 
     num_classes = len(test_gen.class_indices)
-    model = build_model(num_classes=num_classes)
+    model = build_model(model_name=model_name, num_classes=num_classes)
     model.set_weights(weights)
 
     eval_results = model.evaluate(test_gen, verbose=0)
@@ -169,7 +169,7 @@ def _evaluate_global_test(weights) -> Tuple[float, float, float, float]:
 
 class FedProxStrategy(fl.server.strategy.FedAvg):
 
-    def __init__(self, mu=0.01, total_rounds=NUM_ROUNDS, *args, **kwargs):
+    def __init__(self, mu=0.01, total_rounds=NUM_ROUNDS, model_name="densenet121", *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
@@ -177,6 +177,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         self.prev_metrics = None
         self.last_round_clients = []
         self.total_rounds = total_rounds
+        self.model_name = model_name
         self._latest_weights = None
 
     def configure_fit(self, server_round, parameters, client_manager):
@@ -325,7 +326,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
             if server_round == self.total_rounds and self._latest_weights is not None:
                 _log("Final global test evaluation starting")
                 try:
-                    loss, acc, f1, auc = _evaluate_global_test(self._latest_weights)
+                    loss, acc, f1, auc = _evaluate_global_test(self._latest_weights, model_name=self.model_name)
                     _log(
                         "Final global test | "
                         f"loss={loss:.4f} | acc={acc:.4f} | "
@@ -375,6 +376,13 @@ def parse_args():
         default=None,
         help="Fraction of clients per round (default: 1.0)",
     )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="densenet121",
+        choices=["densenet121", "resnet50v2", "efficientnetb0"],
+        help="Backbone architecture to use (default: densenet121)",
+    )
     return parser.parse_args()
 
 
@@ -390,6 +398,7 @@ def start_server(args):
     strategy = FedProxStrategy(
         mu=0.0,
         total_rounds=args.rounds,
+        model_name=args.model_name,
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_fit,
         min_fit_clients=min_fit_clients,

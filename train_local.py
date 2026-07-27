@@ -114,16 +114,23 @@ def parse_args():
         help="Path to a raw ISIC GroundTruth CSV (overrides --client_id)"
     )
     parser.add_argument(
+        "--model_name",
+        type=str,
+        default="densenet121",
+        choices=["densenet121", "resnet50v2", "efficientnetb0"],
+        help="Backbone architecture to use (default: densenet121)"
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
-        default=10,
-        help="Head-only training epochs (default: 10)"
+        default=20,
+        help="Head-only training epochs (default: 20)"
     )
     parser.add_argument(
         "--finetune_epochs",
         type=int,
-        default=5,
-        help="Fine-tuning epochs after unfreezing backbone (default: 5)"
+        default=20,
+        help="Fine-tuning epochs after unfreezing backbone (default: 20)"
     )
     parser.add_argument(
         "--batch_size",
@@ -424,17 +431,15 @@ def train(args):
     # ----------------------------------------
     # FIX 3: BUILD MODEL (identical to FL)
     # ----------------------------------------
-    print("\n[3/4] Building model (EfficientNetB0 — identical to FL config)...")
-    model = build_model(input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3), num_classes=NUM_CLASSES)
+    print(f"\n[3/4] Building model ({args.model_name} — identical to FL config)...")
+    model = build_model(model_name=args.model_name, input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3), num_classes=NUM_CLASSES)
 
     # ----------------------------------------
-    # FIX 4: CALLBACKS — monitor val F1 via proxy
+    # FIX 4: CALLBACKS — monitor val accuracy
     # ----------------------------------------
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     callbacks = [
-        # FIX 4: save best model by val_accuracy
-        # (macro-F1 as Keras callback requires custom metric; we report it post-hoc)
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(CHECKPOINT_DIR, "centralized_best.keras"),
             monitor="val_accuracy",
@@ -443,7 +448,7 @@ def train(args):
         ),
         tf.keras.callbacks.EarlyStopping(
             monitor="val_accuracy",
-            patience=5,
+            patience=10,
             restore_best_weights=True,
             verbose=1,
         ),

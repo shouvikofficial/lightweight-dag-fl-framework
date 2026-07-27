@@ -32,9 +32,10 @@ class FLClient(fl.client.NumPyClient):
         fine_tune_at=120,
         fine_tune_lr=3e-5,
         mu=0.0,
+        model_name="densenet121",
     ):
 
-        self.model = build_model()
+        self.model = build_model(model_name=model_name)
 
         self.x_train = x_train
         self.y_train = y_train

@@ -75,6 +75,13 @@ def parse_args():
         default=SERVER_ADDRESS,
         help=f"Server address (default: {SERVER_ADDRESS})"
     )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="densenet121",
+        choices=["densenet121", "resnet50v2", "efficientnetb0"],
+        help="Backbone architecture to use (default: densenet121)"
+    )
     return parser.parse_args()
 
 
@@ -82,7 +89,7 @@ def parse_args():
 # START CLIENT
 # ============================================
 
-def start_client(client_id, server_address):
+def start_client(client_id, server_address, model_name="densenet121"):
 
     csv_path = os.path.join(DATASET_DIR, f"{client_id}.csv")
 
@@ -159,6 +166,7 @@ def start_client(client_id, server_address):
         train_samples=train_samples,
         val_samples=val_samples,
         log_path=os.path.join(LOG_DIR, f"{client_id}.log"),
+        model_name=model_name,
     )
 
     _log(client_id, f"Connecting to server at {server_address}...")
@@ -179,4 +187,4 @@ def start_client(client_id, server_address):
 
 if __name__ == "__main__":
     args = parse_args()
-    start_client(args.client_id, args.server)
+    start_client(args.client_id, args.server, args.model_name)

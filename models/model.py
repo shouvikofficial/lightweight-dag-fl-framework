@@ -1,4 +1,17 @@
+import tensorflow as tf
+
 from tensorflow.keras.applications import EfficientNetB0, DenseNet121, ResNet50V2
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import (
+    Dense,
+    Dropout,
+    GlobalAveragePooling2D,
+    GlobalMaxPooling2D,
+    BatchNormalization,
+    Concatenate,
+)
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
 
 
 # ============================================
