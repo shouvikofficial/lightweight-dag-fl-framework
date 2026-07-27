@@ -1,6 +1,12 @@
 import tensorflow as tf
 
-from tensorflow.keras.applications import EfficientNetB0, DenseNet121, ResNet50V2
+from tensorflow.keras.applications import (
+    EfficientNetB0,
+    DenseNet121,
+    DenseNet169,
+    DenseNet201,
+    ResNet50V2,
+)
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     Dense,
@@ -33,7 +39,21 @@ def build_model(
     # LOAD PRETRAINED BACKBONE
     # ========================================
     model_name_lower = str(model_name).lower()
-    if "densenet" in model_name_lower:
+    if "densenet169" in model_name_lower:
+        base_model = DenseNet169(
+            weights="imagenet",
+            include_top=False,
+            input_shape=input_shape,
+            name="backbone",
+        )
+    elif "densenet201" in model_name_lower:
+        base_model = DenseNet201(
+            weights="imagenet",
+            include_top=False,
+            input_shape=input_shape,
+            name="backbone",
+        )
+    elif "densenet" in model_name_lower:
         base_model = DenseNet121(
             weights="imagenet",
             include_top=False,

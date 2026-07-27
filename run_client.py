@@ -79,7 +79,7 @@ def parse_args():
         "--model_name",
         type=str,
         default="densenet121",
-        choices=["densenet121", "resnet50v2", "efficientnetb0"],
+        choices=["densenet121", "densenet169", "densenet201", "resnet50v2", "efficientnetb0"],
         help="Backbone architecture to use (default: densenet121)"
     )
     return parser.parse_args()
