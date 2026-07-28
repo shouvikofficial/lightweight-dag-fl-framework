@@ -31,7 +31,7 @@ def build_model(
     dropout_rate_head=0.4,
     dropout_rate_dense=0.3,
     l2_strength=1e-4,
-    learning_rate=1e-4,
+    learning_rate=5e-4,
     auc_name="auc",
 ):
 

@@ -438,6 +438,9 @@ def train(args):
     # FIX 4: CALLBACKS — monitor val accuracy
     # ----------------------------------------
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    csv_log_path = os.path.join(CHECKPOINT_DIR, "centralized_training_log.csv")
+    if os.path.exists(csv_log_path):
+        os.remove(csv_log_path)
 
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
@@ -455,14 +458,14 @@ def train(args):
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss",
             factor=0.5,
-            patience=3,
+            patience=5,
             min_lr=1e-7,
             verbose=1,
         ),
         # FIX 8: log LR
         tf.keras.callbacks.CSVLogger(
-            os.path.join(CHECKPOINT_DIR, "centralized_training_log.csv"),
-            append=False,
+            csv_log_path,
+            append=True,
         ),
     ]
 
@@ -486,7 +489,7 @@ def train(args):
     # ----------------------------------------
     if args.finetune_epochs > 0:
         print(f"\n[Fine-tune] Unfreezing backbone layers > 120 ({args.finetune_epochs} epochs)...")
-        model = unfreeze_model(model, fine_tune_at=120, learning_rate=3e-5)
+        model = unfreeze_model(model, fine_tune_at=120, learning_rate=5e-5)
 
         history2 = model.fit(
             train_gen,
@@ -494,7 +497,7 @@ def train(args):
             epochs=args.finetune_epochs,
             class_weight=class_weights,
             callbacks=callbacks,
-            verbose=2,  # one clean line per epoch
+            verbose=1,  # clean single-line progress bar per epoch
         )
         histories.append(history2)
 
