@@ -2,7 +2,7 @@ import flwr as fl
 import tensorflow as tf
 import numpy as np
 import json
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score, confusion_matrix
 from datetime import datetime
 
 from models.model import build_model, unfreeze_model
@@ -116,6 +116,12 @@ class FLClient(fl.client.NumPyClient):
 
         metrics["acc_manual"] = float(np.mean(y_true_labels == y_pred_labels))
 
+        metrics["precision_macro"] = float(
+            precision_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
+        )
+        metrics["recall_macro"] = float(
+            recall_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
+        )
         metrics["f1_macro"] = float(
             f1_score(y_true_labels, y_pred_labels, average="macro", zero_division=0)
         )

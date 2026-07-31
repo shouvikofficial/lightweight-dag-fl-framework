@@ -26,7 +26,7 @@ from federated.trust_aggregator import TrustAwareAggregator
 from federated.fedprox import FedProx
 from models.model import build_model
 from preprocessing.dataset_loader import prepare_global_test_generator
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score, confusion_matrix
 
 
 # ============================================
@@ -72,45 +72,43 @@ def _print_round_summary(
     train_time_sec,
 ):
     accuracy = avg_metrics.get("accuracy", 0.0)
+    precision = avg_metrics.get("precision", 0.0)
+    recall = avg_metrics.get("recall", 0.0)
     f1_macro = avg_metrics.get("f1_macro", 0.0)
     roc_auc = avg_metrics.get("roc_auc_ovr", 0.0)
+    cm = avg_metrics.get("confusion_matrix")
 
     prev_loss = prev_metrics.get("loss") if prev_metrics else None
     prev_acc = prev_metrics.get("accuracy") if prev_metrics else None
     prev_f1 = prev_metrics.get("f1_macro") if prev_metrics else None
     prev_auc = prev_metrics.get("roc_auc_ovr") if prev_metrics else None
 
-    print("=" * 50)
-    print(f"ROUND {server_round} - GLOBAL EVALUATION")
-    print("=" * 50)
-    print()
+    print("=" * 64)
+    print(f"📊 ROUND {server_round} — GLOBAL MEDICAL CLASSIFICATION EVALUATION")
+    print("=" * 64)
     print(f"Participating Clients : {', '.join(clients) if clients else 'N/A'}")
     print(f"Training Time         : {_fmt_time(train_time_sec)}")
-    print()
-    print("Metric Summary")
-    print("-" * 14)
-    print(f"Loss        : {avg_loss:.4f} {_trend_arrow(avg_loss, prev_loss, False)}")
-    print(f"Accuracy    : {accuracy * 100:.2f}% {_trend_arrow(accuracy, prev_acc, True)}")
-    print(f"F1 Macro    : {f1_macro:.4f} {_trend_arrow(f1_macro, prev_f1, True)}")
-    print(f"ROC AUC OVR : {roc_auc:.4f} {_trend_arrow(roc_auc, prev_auc, True)}")
-    print()
-    print("Training Status")
-    print("-" * 15)
-    status = []
-    if prev_loss is not None and avg_loss < prev_loss:
-        status.append("Global model converging successfully")
-    if prev_loss is not None:
-        status.append("Loss decreasing steadily" if avg_loss < prev_loss else "Loss is not improving")
-    if prev_auc is not None:
-        status.append("AUC improving consistently" if roc_auc > prev_auc else "AUC plateauing")
-    if prev_f1 is not None:
-        status.append("Minority-class prediction improving" if f1_macro > prev_f1 else "F1 needs more rounds")
-    if not status:
-        status.append("Waiting for next round to assess trends")
-    for item in status:
-        print(f"* {item}")
-    print()
-    print("=" * 50)
+    print("-" * 64)
+    print("Metric Summary (All 6 Medical Classification Metrics)")
+    print("-" * 64)
+    print(f"  1. Loss                  : {avg_loss:.4f} {_trend_arrow(avg_loss, prev_loss, False)}")
+    print(f"  2. Accuracy              : {accuracy * 100:.2f}% {_trend_arrow(accuracy, prev_acc, True)}")
+    print(f"  3. Precision (Macro)     : {precision:.4f}")
+    print(f"  4. Recall / Sensitivity  : {recall:.4f}")
+    print(f"  5. F1-Score (Macro)      : {f1_macro:.4f} {_trend_arrow(f1_macro, prev_f1, True)}")
+    print(f"  6. ROC-AUC (Macro OVR)   : {roc_auc:.4f} {_trend_arrow(roc_auc, prev_auc, True)}")
+
+    if cm is not None:
+        print("-" * 64)
+        print("  6. Confusion Matrix (8 ISIC 2019 Classes)")
+        print("     Classes: MEL  NV  BKL  BCC   AK VASC   DF  SCC")
+        class_names = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
+        for idx, row in enumerate(cm):
+            row_str = " ".join(f"{val:4d}" for val in row)
+            cname = class_names[idx] if idx < len(class_names) else f"C{idx}"
+            print(f"     {cname:<4} [ {row_str} ]")
+
+    print("=" * 64 + "\n")
 
 
 def _log(message):
@@ -122,7 +120,7 @@ def _log(message):
         f.write(line + "\n")
 
 
-def _evaluate_global_test(weights, model_name="densenet121") -> Tuple[float, float, float, float]:
+def _evaluate_global_test(weights, model_name="densenet121") -> dict:
     test_gen = prepare_global_test_generator(
         GLOBAL_TEST_CSV,
         IMAGE_ROOT,
@@ -134,12 +132,7 @@ def _evaluate_global_test(weights, model_name="densenet121") -> Tuple[float, flo
     model.set_weights(weights)
 
     eval_results = model.evaluate(test_gen, verbose=0)
-    if isinstance(eval_results, (list, tuple)):
-        loss = float(eval_results[0])
-        accuracy = float(eval_results[1]) if len(eval_results) > 1 else 0.0
-    else:
-        loss = float(eval_results)
-        accuracy = 0.0
+    loss = float(eval_results[0]) if isinstance(eval_results, (list, tuple)) else float(eval_results)
 
     y_true = []
     y_prob = []
@@ -154,15 +147,27 @@ def _evaluate_global_test(weights, model_name="densenet121") -> Tuple[float, flo
 
     y_true_labels = np.argmax(y_true, axis=1)
     y_pred_labels = np.argmax(y_prob, axis=1)
-    accuracy = float(np.mean(y_true_labels == y_pred_labels))
 
+    acc = float(np.mean(y_true_labels == y_pred_labels))
+    prec = float(precision_score(y_true_labels, y_pred_labels, average="macro", zero_division=0))
+    rec = float(recall_score(y_true_labels, y_pred_labels, average="macro", zero_division=0))
     f1 = float(f1_score(y_true_labels, y_pred_labels, average="macro", zero_division=0))
     try:
         auc = float(roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro"))
     except ValueError:
         auc = 0.0
 
-    return loss, accuracy, f1, auc
+    cm = confusion_matrix(y_true_labels, y_pred_labels, labels=list(range(num_classes)))
+
+    return {
+        "loss": loss,
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1_macro": f1,
+        "roc_auc_ovr": auc,
+        "confusion_matrix": cm,
+    }
 
 
 # ============================================
@@ -258,21 +263,24 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         )
 
         # Print 3-Tier Trust & Security Evaluation Table in Server Terminal
-        print("\n" + "🛡️ " + "="*70)
-        print(f"   4-FACTOR ADAPTIVE TRUST EVALUATION — ROUND {server_round}")
-        print("="*74)
-        print(f"   {'Client ID':<12} {'Similarity':<12} {'Val Acc':<10} {'Trust Score':<14} {'3-Tier Action':<18}")
-        print("   " + "-"*70)
+        print("\n" + "🛡️  " + "═"*72)
+        print(f"   ROUND {server_round} · 4-FACTOR ADAPTIVE TRUST & SECURITY ASSESSMENT")
+        print("   " + "─"*72)
+        print(f"   {'Client ID':<12} {'Similarity':<12} {'Val Acc':<10} {'Trust Score':<14} {'3-Tier Decision':<20}")
+        print("   " + "─"*72)
         for cid, info in trust_info.items():
             act = info["action"]
             if act == "ACCEPT":
-                act_str = "[ACCEPT (Full)]"
+                act_str = "✅ ACCEPT (100% Weight)"
             elif act == "PENALIZE":
-                act_str = "[PENALIZE (50%)]"
+                act_str = "⚠️ PENALIZE (50% Weight)"
             else:
-                act_str = "[REJECT (0%)]"
-            print(f"   {cid:<12} {info['similarity']:<12.4f} {info['val_accuracy']:<10.4f} {info['trust_score']:<14.4f} {act_str:<18}")
-        print("="*74 + "\n")
+                act_str = "🚫 REJECT (0% Excluded)"
+            print(f"   {cid:<12} {info['similarity']:<12.4f} {info['val_accuracy']:<10.4f} {info['trust_score']:<14.4f} {act_str:<20}")
+        print("   " + "─"*72)
+        print("   Formula: Trust = 0.35*Hist + 0.25*Sim + 0.20*Acc + 0.20*Blockchain")
+        print("   Tiers:   ≥0.80 -> ACCEPT  |  0.50-0.79 -> PENALIZE  |  <0.50 -> REJECT")
+        print("🛡️  " + "═"*72 + "\n")
 
         # Record trust scores to file
         round_trust_entry = {
@@ -359,11 +367,12 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
             if server_round == self.total_rounds and self._latest_weights is not None:
                 _log("Final global test evaluation starting")
                 try:
-                    loss, acc, f1, auc = _evaluate_global_test(self._latest_weights, model_name=self.model_name)
+                    eval_res = _evaluate_global_test(self._latest_weights, model_name=self.model_name)
                     _log(
                         "Final global test | "
-                        f"loss={loss:.4f} | acc={acc:.4f} | "
-                        f"f1={f1:.4f} | auc={auc:.4f}"
+                        f"loss={eval_res['loss']:.4f} | acc={eval_res['accuracy']:.4f} | "
+                        f"prec={eval_res['precision']:.4f} | rec={eval_res['recall']:.4f} | "
+                        f"f1={eval_res['f1_macro']:.4f} | auc={eval_res['roc_auc_ovr']:.4f}"
                     )
                 except Exception as exc:
                     _log(f"Global test evaluation failed: {exc}")
