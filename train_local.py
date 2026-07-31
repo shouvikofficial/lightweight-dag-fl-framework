@@ -28,12 +28,12 @@ import argparse
 import random
 import json
 
-# ── Suppress ALL TensorFlow / CUDA noise before TF is imported ──────────────
-os.environ["TF_CPP_MIN_LOG_LEVEL"]     = "3"   # suppress TF C++ logs
-os.environ["TF_ENABLE_ONEDNN_OPTS"]   = "0"   # suppress oneDNN info
-os.environ["CUDA_VISIBLE_DEVICES"]    = ""     # silence CUDA probe warnings
-os.environ["TF_GPU_ALLOCATOR"]        = "cuda_malloc_async"
-os.environ["PYTHONWARNINGS"]          = "ignore"
+# ── GPU: select RTX 4050 BEFORE importing TensorFlow ─────────────────────────
+# Uncomment the line below AFTER installing CUDA 11.2 + cuDNN 8.1:
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"   # RTX 4050 only
+os.environ["TF_CPP_MIN_LOG_LEVEL"]   = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["PYTHONWARNINGS"]        = "ignore"
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -50,6 +50,23 @@ import tensorflow as tf
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+# ── GPU setup (memory growth only — device already selected via env var) ──────
+def _configure_gpu():
+    gpus = tf.config.list_physical_devices("GPU")
+    if not gpus:
+        print("[GPU] ⚠️  No GPU detected — falling back to CPU.")
+        return
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"[GPU] ✅  Training on: {[g.name for g in gpus]}")
+        print("[GPU] 🎯  NVIDIA RTX 4050 (CUDA_VISIBLE_DEVICES=1)")
+    except RuntimeError as e:
+        print(f"[GPU] ⚠️  Memory growth config failed: {e}")
+
+_configure_gpu()
+
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
@@ -68,10 +85,10 @@ from models.model import build_model, unfreeze_model
 # CONFIG (identical to FL pipeline)
 # ============================================
 
-DATASET_DIR    = "dataset/partitions"
-IMAGE_ROOT     = "dataset/raw/ISIC_2019_Training_Input"
-CHECKPOINT_DIR = "models/checkpoints"
-PLOTS_DIR      = "models/plots"
+DATASET_DIR     = "dataset/partitions"
+IMAGE_ROOT      = "dataset/raw/ISIC_2019_Training_Input"
+CHECKPOINT_DIR  = "models/checkpoints"
+PLOTS_DIR       = "models/plots"
 GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
 
 CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
@@ -123,20 +140,40 @@ def parse_args():
     parser.add_argument(
         "--epochs",
         type=int,
-        default=20,
-        help="Head-only training epochs (default: 20)"
+        default=25,
+        help="Head-only training epochs (default: 25)"
     )
     parser.add_argument(
         "--finetune_epochs",
         type=int,
-        default=20,
-        help="Fine-tuning epochs after unfreezing backbone (default: 20)"
+        default=25,
+        help="Fine-tuning epochs after unfreezing backbone (default: 25)"
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=BATCH_SIZE,
         help=f"Batch size (default: {BATCH_SIZE})"
+    )
+    parser.add_argument(
+        "--use_tta",
+        type=lambda x: (str(x).lower() in ['true', '1', 'yes']),
+        default=True,
+        help="Use 5-point Test-Time Augmentation during test evaluation (default: True)"
+    )
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="cosine",
+        choices=["cosine", "plateau"],
+        help="Learning rate decay strategy: 'cosine' or 'plateau' (default: cosine)"
+    )
+    parser.add_argument(
+        "--pooling_mode",
+        type=str,
+        default="gem_gap",
+        choices=["gem_gap", "gem_gmp", "gem_only"],
+        help="Pooling combination: 'gem_gap' (GeM+GAP), 'gem_gmp' (GeM+GMP), or 'gem_only' (default: gem_gap)"
     )
     return parser.parse_args()
 
@@ -189,21 +226,25 @@ def verify_dataset_integrity(df, name="dataset"):
     return df
 
 
+from models.model import build_model, unfreeze_model, get_preprocess_input
+
+
 # ============================================
-# FIX 2: GENERATOR BUILDERS (identical to FL)
+# DYNAMIC GENERATOR BUILDERS
 # ============================================
 
-def build_train_generator(df, batch_size, seed):
-    """Augmented training generator — same config as FL pipeline."""
+def build_train_generator(df, batch_size, seed, model_name="densenet121"):
+    """Augmented training generator with backbone-matched preprocessing."""
+    prep_fn = get_preprocess_input(model_name)
     datagen = ImageDataGenerator(
-        preprocessing_function=preprocess_input,
-        rotation_range=180,
+        preprocessing_function=prep_fn,
+        rotation_range=30,
         width_shift_range=0.15,
         height_shift_range=0.15,
         zoom_range=0.15,
         brightness_range=[0.8, 1.2],
         horizontal_flip=True,
-        vertical_flip=True,
+        vertical_flip=False,
         fill_mode="reflect",
     )
     return datagen.flow_from_dataframe(
@@ -220,9 +261,10 @@ def build_train_generator(df, batch_size, seed):
     )
 
 
-def build_eval_generator(df, batch_size, seed):
-    """No-augmentation generator for val/test evaluation."""
-    datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+def build_eval_generator(df, batch_size, seed, model_name="densenet121"):
+    """No-augmentation generator with backbone-matched preprocessing for val/test evaluation."""
+    prep_fn = get_preprocess_input(model_name)
+    datagen = ImageDataGenerator(preprocessing_function=prep_fn)
     return datagen.flow_from_dataframe(
         df,
         directory=IMAGE_ROOT,
@@ -237,21 +279,27 @@ def build_eval_generator(df, batch_size, seed):
     )
 
 
+from models.evaluate import evaluate_model, predict_batch_with_tta, compute_pr_auc_macro
+
+
 # ============================================
-# FIX 5: COMPREHENSIVE METRICS
+# FIX 5: COMPREHENSIVE METRICS WITH TTA
 # ============================================
 
-def compute_full_metrics(model, gen, class_names, split_name="Test"):
-    """Compute all evaluation metrics from a generator."""
-    print(f"\n[Evaluation] Running on {split_name} set...")
+def compute_full_metrics(model, gen, class_names, split_name="Test", use_tta=True):
+    """Compute all evaluation metrics from a generator with optional Test-Time Augmentation."""
+    print(f"\n[Evaluation] Running on {split_name} set (TTA={'ON' if use_tta else 'OFF'})...")
     y_true_all, y_prob_all = [], []
     gen.reset()
     n_steps = len(gen)
     for i in range(n_steps):
         x_batch, y_batch = gen[i]
-        y_prob_all.append(model.predict(x_batch, verbose=0))
+        if use_tta:
+            y_prob_all.append(predict_batch_with_tta(model, x_batch))
+        else:
+            y_prob_all.append(model.predict(x_batch, verbose=0))
         y_true_all.append(y_batch)
-        print(f"\r  Predicting: {i+1}/{n_steps} batches", end="", flush=True)
+        print(f"\r  Predicting with TTA: {i+1}/{n_steps} batches", end="", flush=True)
     print()  # newline after prediction loop
 
     y_prob = np.concatenate(y_prob_all, axis=0)
@@ -264,6 +312,9 @@ def compute_full_metrics(model, gen, class_names, split_name="Test"):
     macro_f1      = f1_score(y_true, y_pred, average="macro", zero_division=0)
     macro_prec    = precision_score(y_true, y_pred, average="macro", zero_division=0)
     macro_recall  = recall_score(y_true, y_pred, average="macro", zero_division=0)
+    mcc           = matthews_corrcoef(y_true, y_pred)
+    cohen_kappa   = cohen_kappa_score(y_true, y_pred)
+    pr_auc_macro  = compute_pr_auc_macro(y_true_oh, y_prob)
     cm            = confusion_matrix(y_true, y_pred)
     report        = classification_report(y_true, y_pred, target_names=class_names, zero_division=0)
 
@@ -280,6 +331,9 @@ def compute_full_metrics(model, gen, class_names, split_name="Test"):
     print(f"  Macro F1-Score   : {macro_f1:.4f}")
     print(f"  Macro Precision  : {macro_prec:.4f}")
     print(f"  Macro Recall     : {macro_recall:.4f}")
+    print(f"  MCC              : {mcc:.4f}")
+    print(f"  Cohen's Kappa    : {cohen_kappa:.4f}")
+    print(f"  PR-AUC (Macro)   : {pr_auc_macro:.4f}")
     print(f"  ROC-AUC (OvR)   : {roc_auc:.4f}")
     print(f"  {'='*42}")
     print(f"\n  Per-Class Report:\n{report}")
@@ -290,6 +344,9 @@ def compute_full_metrics(model, gen, class_names, split_name="Test"):
         "macro_f1": macro_f1,
         "macro_precision": macro_prec,
         "macro_recall": macro_recall,
+        "mcc": mcc,
+        "cohen_kappa": cohen_kappa,
+        "pr_auc_macro": pr_auc_macro,
         "roc_auc_ovr": roc_auc,
         "confusion_matrix": cm.tolist(),
         "report": report,
@@ -410,9 +467,9 @@ def train(args):
     # FIX 2: BUILD GENERATORS (no numpy arrays)
     # ----------------------------------------
     print("\n[1/4] Building data generators...")
-    train_gen = build_train_generator(train_df, args.batch_size, SEED)
-    val_gen   = build_eval_generator(val_df,   args.batch_size, SEED)
-    test_gen  = build_eval_generator(test_df if use_global_test else val_df, args.batch_size, SEED)
+    train_gen = build_train_generator(train_df, args.batch_size, SEED, model_name=args.model_name)
+    val_gen   = build_eval_generator(val_df,   args.batch_size, SEED, model_name=args.model_name)
+    test_gen  = build_eval_generator(test_df if use_global_test else val_df, args.batch_size, SEED, model_name=args.model_name)
 
     print(f"    Train samples  : {len(train_df)}")
     print(f"    Val samples    : {len(val_df)}")
@@ -431,54 +488,103 @@ def train(args):
     # ----------------------------------------
     # FIX 3: BUILD MODEL (identical to FL)
     # ----------------------------------------
-    print(f"\n[3/4] Building model ({args.model_name} — identical to FL config)...")
-    model = build_model(model_name=args.model_name, input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3), num_classes=NUM_CLASSES)
+    print(f"\n[3/4] Building model ({args.model_name}, pooling={args.pooling_mode} — identical to FL config)...")
+    model = build_model(
+        model_name=args.model_name,
+        input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3),
+        num_classes=NUM_CLASSES,
+        pooling_mode=args.pooling_mode,
+    )
 
     # ----------------------------------------
-    # FIX 4: CALLBACKS — monitor val accuracy
+    # FIX 4: CALLBACKS & Schedulers
     # ----------------------------------------
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    csv_log_path = os.path.join(CHECKPOINT_DIR, "centralized_training_log.csv")
-    if os.path.exists(csv_log_path):
-        os.remove(csv_log_path)
+    model_tag = str(args.model_name).lower()
+    ckpt_filepath = os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.keras")
+    csv_log_path  = os.path.join(CHECKPOINT_DIR, f"centralized_training_log_{model_tag}.csv")
 
-    callbacks = [
+    try:
+        if os.path.exists(csv_log_path):
+            os.remove(csv_log_path)
+    except Exception:
+        try:
+            with open(csv_log_path, "w") as f:
+                pass
+        except Exception:
+            pass
+
+    steps_per_epoch = len(train_gen)
+
+    def make_cosine_callback(initial_lr, total_epochs):
+        total_steps = max(1, total_epochs * steps_per_epoch)
+        def lr_fn(epoch, current_lr):
+            progress = epoch / float(max(1, total_epochs))
+            # Cosine decay down to 1% of initial_lr
+            return float(initial_lr * (0.01 + 0.99 * 0.5 * (1.0 + np.cos(np.pi * progress))))
+        return tf.keras.callbacks.LearningRateScheduler(lr_fn, verbose=0)
+
+    base_callbacks_p1 = [
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(CHECKPOINT_DIR, "centralized_best.keras"),
-            monitor="val_accuracy",
+            filepath=ckpt_filepath,
+            monitor="val_auc",
+            mode="max",
             save_best_only=True,
             verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
-            monitor="val_accuracy",
-            patience=10,
+            monitor="val_auc",
+            mode="max",
+            patience=8,
             restore_best_weights=True,
             verbose=1,
         ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss",
-            factor=0.5,
-            patience=5,
-            min_lr=1e-7,
-            verbose=1,
-        ),
-        # FIX 8: log LR
         tf.keras.callbacks.CSVLogger(
             csv_log_path,
             append=True,
         ),
     ]
 
+    base_callbacks_p2 = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=ckpt_filepath,
+            monitor="val_auc",
+            mode="max",
+            save_best_only=True,
+            verbose=1,
+        ),
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_auc",
+            mode="max",
+            patience=15,
+            restore_best_weights=True,
+            verbose=1,
+        ),
+        tf.keras.callbacks.CSVLogger(
+            csv_log_path,
+            append=True,
+        ),
+    ]
+
+    if args.lr_scheduler == "cosine":
+        callbacks_p1 = base_callbacks_p1 + [make_cosine_callback(initial_lr=5e-4, total_epochs=args.epochs)]
+    else:
+        callbacks_p1 = base_callbacks_p1 + [
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor="val_loss", factor=0.5, patience=5, min_lr=1e-7, verbose=1
+            )
+        ]
+
     # ----------------------------------------
     # PHASE 1: TRAIN HEAD ONLY
     # ----------------------------------------
-    print(f"\n[4/4] Phase 1: Training classification head ({args.epochs} epochs)...")
+    print(f"\n[4/4] Phase 1: Training classification head ({args.epochs} epochs, Scheduler={args.lr_scheduler.upper()})...")
     history1 = model.fit(
         train_gen,
         validation_data=val_gen,
         epochs=args.epochs,
         class_weight=class_weights,
-        callbacks=callbacks,
+        callbacks=callbacks_p1,
         verbose=1,  # clean single-line progress bar per epoch
     )
 
@@ -488,15 +594,24 @@ def train(args):
     # PHASE 2: FINE-TUNE BACKBONE
     # ----------------------------------------
     if args.finetune_epochs > 0:
-        print(f"\n[Fine-tune] Unfreezing backbone layers > 120 ({args.finetune_epochs} epochs)...")
-        model = unfreeze_model(model, fine_tune_at=120, learning_rate=5e-5)
+        print(f"\n[Fine-tune] Unfreezing top backbone layers for {args.model_name} ({args.finetune_epochs} epochs)...")
+        model = unfreeze_model(model, fine_tune_at=None, learning_rate=5e-5, model_name=args.model_name)
+
+        if args.lr_scheduler == "cosine":
+            callbacks_p2 = base_callbacks_p2 + [make_cosine_callback(initial_lr=5e-5, total_epochs=args.finetune_epochs)]
+        else:
+            callbacks_p2 = base_callbacks_p2 + [
+                tf.keras.callbacks.ReduceLROnPlateau(
+                    monitor="val_loss", factor=0.5, patience=5, min_lr=1e-7, verbose=1
+                )
+            ]
 
         history2 = model.fit(
             train_gen,
             validation_data=val_gen,
             epochs=args.finetune_epochs,
             class_weight=class_weights,
-            callbacks=callbacks,
+            callbacks=callbacks_p2,
             verbose=1,  # clean single-line progress bar per epoch
         )
         histories.append(history2)
@@ -507,16 +622,17 @@ def train(args):
     save_training_plots(histories, PLOTS_DIR)
 
     # ----------------------------------------
-    # FIX 5 + 1: EVALUATE ON UNSEEN TEST SET
+    # FIX 5 + 1: EVALUATE ON UNSEEN TEST SET (WITH TTA)
     # ----------------------------------------
     test_results = compute_full_metrics(
         model, test_gen,
         class_names=CLASS_NAMES,
         split_name="Unseen Test" if use_global_test else "Validation (Proxy Test)",
+        use_tta=args.use_tta,
     )
 
     # Save metrics to JSON
-    metrics_path = os.path.join(CHECKPOINT_DIR, "centralized_metrics.json")
+    metrics_path = os.path.join(CHECKPOINT_DIR, f"centralized_metrics_{model_tag}.json")
     with open(metrics_path, "w") as f:
         serializable = {k: v for k, v in test_results.items() if k != "report"}
         serializable["report"] = test_results["report"]

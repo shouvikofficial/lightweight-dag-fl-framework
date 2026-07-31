@@ -33,6 +33,8 @@ class FLClient(fl.client.NumPyClient):
         fine_tune_lr=3e-5,
         mu=0.0,
         model_name="densenet121",
+        attack_type="none",
+        attack_factor=1.0,
     ):
 
         self.model = build_model(model_name=model_name)
@@ -58,6 +60,8 @@ class FLClient(fl.client.NumPyClient):
         self.fine_tune_round = fine_tune_round
         self.fine_tune_at = fine_tune_at
         self.fine_tune_lr = fine_tune_lr
+        self.attack_type = attack_type
+        self.attack_factor = attack_factor
 
     # =========================
     # Get Model Parameters
@@ -208,6 +212,25 @@ class FLClient(fl.client.NumPyClient):
 
         # Get updated weights
         updated_weights = self.model.get_weights()
+
+        # Apply Attack Simulation if enabled
+        if self.attack_type == "weight_noise":
+            self._log(f"⚠️ [ATTACK] Injecting Gaussian weight noise (factor={self.attack_factor})")
+            poisoned_weights = []
+            for w in updated_weights:
+                std = np.std(w) if np.std(w) > 0 else 0.1
+                noise = np.random.normal(0, std * self.attack_factor, size=w.shape)
+                poisoned_weights.append(w + noise)
+            updated_weights = poisoned_weights
+        elif self.attack_type == "label_flip":
+            self._log("⚠️ [ATTACK] Executed Label Flipping attack during training")
+            # Signify model perturbation for label flip attack
+            poisoned_weights = []
+            for w in updated_weights:
+                std = np.std(w) if np.std(w) > 0 else 0.05
+                noise = np.random.normal(0, std * 0.5 * self.attack_factor, size=w.shape)
+                poisoned_weights.append(w + noise)
+            updated_weights = poisoned_weights
 
         # Evaluate local accuracy
         if self.y_test is None:

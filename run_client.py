@@ -82,6 +82,19 @@ def parse_args():
         choices=["densenet121", "densenet169", "densenet201", "resnet50v2", "efficientnetb0"],
         help="Backbone architecture to use (default: densenet121)"
     )
+    parser.add_argument(
+        "--attack_type",
+        type=str,
+        default="none",
+        choices=["none", "label_flip", "weight_noise"],
+        help="Poisoning attack simulation: none (default), label_flip, or weight_noise"
+    )
+    parser.add_argument(
+        "--attack_factor",
+        type=float,
+        default=1.0,
+        help="Attack intensity factor (default: 1.0)"
+    )
     return parser.parse_args()
 
 
@@ -89,7 +102,7 @@ def parse_args():
 # START CLIENT
 # ============================================
 
-def start_client(client_id, server_address, model_name="densenet121"):
+def start_client(client_id, server_address, model_name="densenet121", attack_type="none", attack_factor=1.0):
 
     csv_path = os.path.join(DATASET_DIR, f"{client_id}.csv")
 
@@ -125,6 +138,7 @@ def start_client(client_id, server_address, model_name="densenet121"):
     train_gen, val_gen, class_names = prepare_client_generators(
         csv_path=csv_path,
         image_root=IMAGE_ROOT,
+        model_name=model_name,
     )
 
     train_samples = getattr(train_gen, "n", None) or getattr(train_gen, "samples", None)
@@ -167,6 +181,8 @@ def start_client(client_id, server_address, model_name="densenet121"):
         val_samples=val_samples,
         log_path=os.path.join(LOG_DIR, f"{client_id}.log"),
         model_name=model_name,
+        attack_type=attack_type,
+        attack_factor=attack_factor,
     )
 
     _log(client_id, f"Connecting to server at {server_address}...")
@@ -187,4 +203,10 @@ def start_client(client_id, server_address, model_name="densenet121"):
 
 if __name__ == "__main__":
     args = parse_args()
-    start_client(args.client_id, args.server, args.model_name)
+    start_client(
+        client_id=args.client_id,
+        server_address=args.server,
+        model_name=args.model_name,
+        attack_type=args.attack_type,
+        attack_factor=args.attack_factor,
+    )

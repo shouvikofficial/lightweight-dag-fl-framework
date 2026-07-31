@@ -7,12 +7,49 @@ from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
     classification_report,
+    cohen_kappa_score,
     confusion_matrix,
     f1_score,
+    matthews_corrcoef,
+    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
+    auc,
 )
+
+
+# ============================================
+# SOTA IMPROVEMENT 5: TEST-TIME AUGMENTATION (TTA)
+# ============================================
+
+def predict_batch_with_tta(model, x_batch: np.ndarray) -> np.ndarray:
+    """
+    Predict probabilities across 5 spatial variations of image batch:
+      1. Original
+      2. Horizontal Flip
+      3. Vertical Flip
+      4. Horizontal + Vertical Flip
+      5. 90-degree Rotation
+    Averages predictions across all 5 views.
+    """
+    p1 = model.predict(x_batch, verbose=0)
+    p2 = model.predict(np.flip(x_batch, axis=2), verbose=0)
+    p3 = model.predict(np.flip(x_batch, axis=1), verbose=0)
+    p4 = model.predict(np.flip(np.flip(x_batch, axis=1), axis=2), verbose=0)
+    p5 = model.predict(np.rot90(x_batch, k=1, axes=(1, 2)), verbose=0)
+    return (p1 + p2 + p3 + p4 + p5) / 5.0
+
+
+def compute_pr_auc_macro(y_true_oh: np.ndarray, y_prob: np.ndarray) -> float:
+    """Compute Macro Precision-Recall AUC across all classes."""
+    pr_aucs = []
+    n_classes = y_true_oh.shape[1]
+    for c in range(n_classes):
+        if np.sum(y_true_oh[:, c]) > 0:
+            p, r, _ = precision_recall_curve(y_true_oh[:, c], y_prob[:, c])
+            pr_aucs.append(auc(r, p))
+    return float(np.mean(pr_aucs)) if pr_aucs else 0.0
 
 
 # ============================================
@@ -26,23 +63,16 @@ def evaluate_model(
     class_names=None,
     batch_size=32,
     top_k: Optional[int] = 3,
+    use_tta: bool = True,
 ) -> Dict:
-    """
-    Evaluate a Keras model on pre-loaded numpy test arrays.
-
-    Returns a dict containing:
-        loss, accuracy, balanced_accuracy, macro_f1,
-        macro_precision, macro_recall, roc_auc_ovr,
-        confusion_matrix, report, top_k_accuracy (optional).
-    """
-
     eval_results = model.evaluate(x_test, y_test, batch_size=batch_size, verbose=0)
-    if isinstance(eval_results, (list, tuple)):
-        avg_loss = float(eval_results[0])
-    else:
-        avg_loss = float(eval_results)
+    avg_loss = float(eval_results[0]) if isinstance(eval_results, (list, tuple)) else float(eval_results)
 
-    y_pred_prob = model.predict(x_test, batch_size=batch_size, verbose=0)
+    if use_tta:
+        y_pred_prob = predict_batch_with_tta(model, x_test)
+    else:
+        y_pred_prob = model.predict(x_test, batch_size=batch_size, verbose=0)
+
     y_true = np.argmax(y_test, axis=1)
     y_pred = np.argmax(y_pred_prob, axis=1)
 
@@ -51,6 +81,9 @@ def evaluate_model(
     macro_f1     = f1_score(y_true, y_pred, average="macro", zero_division=0)
     macro_prec   = precision_score(y_true, y_pred, average="macro", zero_division=0)
     macro_recall = recall_score(y_true, y_pred, average="macro", zero_division=0)
+    mcc          = matthews_corrcoef(y_true, y_pred)
+    cohen_kappa  = cohen_kappa_score(y_true, y_pred)
+    pr_auc_macro = compute_pr_auc_macro(y_test, y_pred_prob)
     cm           = confusion_matrix(y_true, y_pred)
     report       = classification_report(y_true, y_pred, target_names=class_names, zero_division=0)
 
@@ -66,6 +99,9 @@ def evaluate_model(
         "macro_f1":         macro_f1,
         "macro_precision":  macro_prec,
         "macro_recall":     macro_recall,
+        "mcc":              mcc,
+        "cohen_kappa":      cohen_kappa,
+        "pr_auc_macro":     pr_auc_macro,
         "roc_auc_ovr":      roc_auc,
         "confusion_matrix": cm,
         "report":           report,
@@ -87,16 +123,8 @@ def evaluate_with_generator(
     generator,
     class_names: Optional[List[str]] = None,
     steps: Optional[int] = None,
+    use_tta: bool = True,
 ) -> Dict:
-    """
-    Evaluate using a Keras ImageDataGenerator (memory-safe).
-
-    Returns a dict containing:
-        loss, accuracy, balanced_accuracy, macro_f1,
-        macro_precision, macro_recall, roc_auc_ovr,
-        confusion_matrix, report.
-    """
-
     generator.reset()
     if steps is None:
         steps = len(generator)
@@ -104,7 +132,10 @@ def evaluate_with_generator(
     y_true_all, y_prob_all = [], []
     for i in range(steps):
         x_batch, y_batch = generator[i]
-        y_prob_all.append(model.predict(x_batch, verbose=0))
+        if use_tta:
+            y_prob_all.append(predict_batch_with_tta(model, x_batch))
+        else:
+            y_prob_all.append(model.predict(x_batch, verbose=0))
         y_true_all.append(y_batch)
 
     y_prob   = np.concatenate(y_prob_all, axis=0)
@@ -112,7 +143,6 @@ def evaluate_with_generator(
     y_true   = np.argmax(y_true_oh, axis=1)
     y_pred   = np.argmax(y_prob, axis=1)
 
-    # Keras native loss/accuracy
     eval_results = model.evaluate(generator, steps=steps, verbose=0)
     avg_loss = float(eval_results[0]) if isinstance(eval_results, (list, tuple)) else float(eval_results)
 
@@ -121,6 +151,9 @@ def evaluate_with_generator(
     macro_f1     = f1_score(y_true, y_pred, average="macro", zero_division=0)
     macro_prec   = precision_score(y_true, y_pred, average="macro", zero_division=0)
     macro_recall = recall_score(y_true, y_pred, average="macro", zero_division=0)
+    mcc          = matthews_corrcoef(y_true, y_pred)
+    cohen_kappa  = cohen_kappa_score(y_true, y_pred)
+    pr_auc_macro = compute_pr_auc_macro(y_true_oh, y_prob)
     cm           = confusion_matrix(y_true, y_pred)
     report       = classification_report(y_true, y_pred, target_names=class_names, zero_division=0)
 
@@ -136,6 +169,9 @@ def evaluate_with_generator(
         "macro_f1":         macro_f1,
         "macro_precision":  macro_prec,
         "macro_recall":     macro_recall,
+        "mcc":              mcc,
+        "cohen_kappa":      cohen_kappa,
+        "pr_auc_macro":     pr_auc_macro,
         "roc_auc_ovr":      roc_auc,
         "confusion_matrix": cm,
         "report":           report,

@@ -11,7 +11,7 @@ from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.preprocessing.image import (
     ImageDataGenerator
 )
-from tensorflow.keras.applications.efficientnet import preprocess_input
+from models.model import get_preprocess_input
 
 
 # ============================================
@@ -281,12 +281,14 @@ def prepare_client_data(
 # CLIENT GENERATOR PIPELINE (MEMORY-SAFE)
 # ============================================
 
+
 def prepare_client_generators(
     csv_path,
     image_root,
-    batch_size=BATCH_SIZE,
     validation_split=0.2,
+    batch_size=BATCH_SIZE,
     seed=42,
+    model_name="densenet121",
 ):
     df = pd.read_csv(csv_path)
 
@@ -300,20 +302,22 @@ def prepare_client_generators(
         stratify=df["label"],
     )
 
+    prep_fn = get_preprocess_input(model_name)
+
     train_datagen = ImageDataGenerator(
-        preprocessing_function=preprocess_input,
-        rotation_range=180,
+        preprocessing_function=prep_fn,
+        rotation_range=30,
         width_shift_range=0.15,
         height_shift_range=0.15,
         zoom_range=0.15,
         brightness_range=[0.8, 1.2],
         horizontal_flip=True,
-        vertical_flip=True,
+        vertical_flip=False,
         fill_mode="reflect",
     )
 
     val_datagen = ImageDataGenerator(
-        preprocessing_function=preprocess_input,
+        preprocessing_function=prep_fn,
     )
 
     train_generator = train_datagen.flow_from_dataframe(
@@ -360,14 +364,16 @@ def prepare_global_test_generator(
     csv_path,
     image_root,
     batch_size=BATCH_SIZE,
+    model_name="densenet121",
 ):
     df = pd.read_csv(csv_path)
 
     if "image" not in df.columns or "label" not in df.columns:
         raise ValueError("CSV must contain 'image' and 'label' columns")
 
+    prep_fn = get_preprocess_input(model_name)
     test_datagen = ImageDataGenerator(
-        preprocessing_function=preprocess_input,
+        preprocessing_function=prep_fn,
     )
 
     test_generator = test_datagen.flow_from_dataframe(

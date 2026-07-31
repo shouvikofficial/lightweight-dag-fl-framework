@@ -22,6 +22,7 @@ import numpy as np
 import flwr as fl
 from blockchain.shared_ledger import add_transaction
 from federated.aggregator import Aggregator
+from federated.trust_aggregator import TrustAwareAggregator
 from federated.fedprox import FedProx
 from models.model import build_model
 from preprocessing.dataset_loader import prepare_global_test_generator
@@ -125,6 +126,7 @@ def _evaluate_global_test(weights, model_name="densenet121") -> Tuple[float, flo
     test_gen = prepare_global_test_generator(
         GLOBAL_TEST_CSV,
         IMAGE_ROOT,
+        model_name=model_name,
     )
 
     num_classes = len(test_gen.class_indices)
@@ -173,12 +175,14 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         super().__init__(*args, **kwargs)
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
+        self.trust_aggregator = TrustAwareAggregator(alpha=0.7, rejection_threshold=0.25)
         self.round_start_time = {}
         self.prev_metrics = None
         self.last_round_clients = []
         self.total_rounds = total_rounds
         self.model_name = model_name
         self._latest_weights = None
+        self.trust_log = []
 
     def configure_fit(self, server_round, parameters, client_manager):
         fit_config = super().configure_fit(server_round, parameters, client_manager)
@@ -211,21 +215,21 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         client_weights = []
         client_sizes = []
         client_ids = []
+        client_accuracies = {}
+        blockchain_validations = {}
+
         for _, fit_res in results:
             client_id = fit_res.metrics.get("client_id", "unknown")
+            acc = fit_res.metrics.get("accuracy", fit_res.metrics.get("categorical_accuracy", 0.80))
+            client_accuracies[client_id] = float(acc)
             is_valid = True
-            
+
             tx_json = fit_res.metrics.get("transaction")
             if tx_json:
                 try:
                     tx = json.loads(tx_json)
                     status = add_transaction(tx)
                     _log("[BLOCKCHAIN] Transaction verified")
-                    if status.get("reason") == "bad_signature":
-                        _log("[BLOCKCHAIN] Signature invalid")
-                    else:
-                        _log("[BLOCKCHAIN] Signature valid")
-
                     if status.get("validated"):
                         _log("[BLOCKCHAIN] Update accepted")
                         is_valid = True
@@ -236,24 +240,53 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
                     _log("[BLOCKCHAIN] Transaction parse failed")
                     is_valid = False
 
-            # ONLY append to aggregation list if the Blockchain accepted it!
-            if is_valid:
-                client_weights.append(
-                    fl.common.parameters_to_ndarrays(fit_res.parameters)
-                )
-                client_sizes.append(fit_res.num_examples)
-                client_ids.append(client_id)
+            blockchain_validations[client_id] = is_valid
+            client_weights.append(fl.common.parameters_to_ndarrays(fit_res.parameters))
+            client_sizes.append(fit_res.num_examples)
+            client_ids.append(client_id)
 
+        _log("Received updates from: " + ", ".join(client_ids))
 
-        _log(
-            "Received updates from: "
-            + ", ".join(client_ids)
+        # Perform 4-Factor Adaptive Trust-Weighted Aggregation with 3-Tier Decision System
+        aggregated_weights, trust_info = self.trust_aggregator.aggregate(
+            client_ids=client_ids,
+            client_weights=client_weights,
+            client_sizes=client_sizes,
+            client_accuracies=client_accuracies,
+            blockchain_validations=blockchain_validations,
+            prev_global_weights=self._latest_weights,
         )
 
-        aggregated_weights = self.aggregator.weighted_average(
-            client_weights,
-            client_sizes,
-        )
+        # Print 3-Tier Trust & Security Evaluation Table in Server Terminal
+        print("\n" + "🛡️ " + "="*70)
+        print(f"   4-FACTOR ADAPTIVE TRUST EVALUATION — ROUND {server_round}")
+        print("="*74)
+        print(f"   {'Client ID':<12} {'Similarity':<12} {'Val Acc':<10} {'Trust Score':<14} {'3-Tier Action':<18}")
+        print("   " + "-"*70)
+        for cid, info in trust_info.items():
+            act = info["action"]
+            if act == "ACCEPT":
+                act_str = "[ACCEPT (Full)]"
+            elif act == "PENALIZE":
+                act_str = "[PENALIZE (50%)]"
+            else:
+                act_str = "[REJECT (0%)]"
+            print(f"   {cid:<12} {info['similarity']:<12.4f} {info['val_accuracy']:<10.4f} {info['trust_score']:<14.4f} {act_str:<18}")
+        print("="*74 + "\n")
+
+        # Record trust scores to file
+        round_trust_entry = {
+            "round": server_round,
+            "timestamp": datetime.now().isoformat(),
+            "client_trust": trust_info
+        }
+        self.trust_log.append(round_trust_entry)
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(os.path.join(LOG_DIR, "trust_scores.json"), "w", encoding="utf-8") as tf_file:
+                json.dump(self.trust_log, tf_file, indent=2)
+        except Exception as log_err:
+            _log(f"[WARN] Failed writing trust_scores.json: {log_err}")
 
         aggregated_parameters = fl.common.ndarrays_to_parameters(aggregated_weights)
 
