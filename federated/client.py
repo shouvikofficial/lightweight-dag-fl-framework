@@ -98,15 +98,21 @@ class FLClient(fl.client.NumPyClient):
             y_prob_batches = []
             for i in range(len(self.x_test)):
                 x_batch, y_batch = self.x_test[i]
-                y_prob = self.model.predict(x_batch, verbose=0)
+                if isinstance(x_batch, (list, tuple)):
+                    y_prob = self.model.predict([x_batch[0], x_batch[1]], verbose=0)
+                else:
+                    y_prob = self.model.predict(x_batch, verbose=0)
                 y_true_batches.append(y_batch)
                 y_prob_batches.append(y_prob)
             y_true = np.concatenate(y_true_batches, axis=0)
             y_prob = np.concatenate(y_prob_batches, axis=0)
             return y_true, y_prob
 
+        if isinstance(self.x_test, (list, tuple)):
+            y_prob = self.model.predict([self.x_test[0], self.x_test[1]], verbose=0)
+        else:
+            y_prob = self.model.predict(self.x_test, verbose=0)
         y_true = self.y_test
-        y_prob = self.model.predict(self.x_test, verbose=0)
         return y_true, y_prob
 
     def _compute_extra_metrics(self, y_true, y_prob):

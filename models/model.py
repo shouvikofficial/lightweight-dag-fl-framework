@@ -211,15 +211,50 @@ def get_loss_function(label_smoothing=0.1):
 
 
 # ============================================
-# BUILD MODEL
+# FAST-FAIL SANITY CHECK HELPER
+# ============================================
+
+def sanity_check(model, generator, loss_fn=None, label="Sanity Check") -> bool:
+    import traceback
+    print(f"\n── Sanity check: {label} ──────────────────────────────────────")
+    try:
+        sample = generator[0]
+        if isinstance(sample[0], (list, tuple)):
+            img_batch, meta_batch = sample[0]
+            y_batch = sample[1]
+            print("Image batch shape:   ", img_batch.shape)
+            print("Metadata batch shape:", meta_batch.shape)
+            print("Label batch shape:   ", y_batch.shape)
+            test_pred = model([img_batch, meta_batch], training=False)
+        else:
+            img_batch, y_batch = sample
+            print("Image batch shape:   ", img_batch.shape)
+            print("Label batch shape:   ", y_batch.shape)
+            test_pred = model(img_batch, training=False)
+
+        print("Model output shape:  ", test_pred.shape)
+        if loss_fn is not None:
+            test_loss = loss_fn(y_batch, test_pred)
+            print("Test loss value:     ", float(np.mean(test_loss)))
+        print("✅ Forward pass + loss computation succeeded\n")
+        return True
+    except Exception:
+        print("❌ Sanity check FAILED — full traceback below:\n")
+        traceback.print_exc()
+        return False
+
+
+# ============================================
+# BUILD MODEL (MULTIMODAL DUAL-INPUT + ATTENTION)
 # ============================================
 
 def build_model(
     model_name="densenet121",
     input_shape=(224, 224, 3),
+    metadata_dim=3,
     num_classes=8,
     dropout_rate_head=0.4,
-    dropout_rate_dense=0.3,
+    dropout_rate_dense=0.35,
     l2_strength=1e-4,
     learning_rate=5e-4,
     auc_name="auc",
@@ -228,11 +263,15 @@ def build_model(
     pooling_mode="gem_gap",
     label_smoothing=0.1,
     cbam_reduction_ratio=8,
+    enable_multimodal=True,
 ):
     """
-    Build pretrained backbone with CBAM Attention, GeM Pooling, AdamW, He Initialization,
-    512->256 Dense Head, and Focal Crossentropy Loss.
+    Builds Dual-Input Multimodal Architecture:
+    1. Image Branch: Backbone (DenseNet/ResNet/EffNet) + CBAM Attention + Dual Pooling (GAP + GMP).
+    2. Metadata Branch: Dense(32) -> BN -> Dense(16) -> BN for patient age, sex, anatom_site.
+    3. Multimodal Fusion Head: Concatenate([image_features, metadata_features]) -> Dense(256) -> Dense(8, Softmax).
     """
+    image_input = tf.keras.layers.Input(shape=input_shape, name="image_input")
     model_name_lower = str(model_name).lower()
     if "densenet169" in model_name_lower:
         base_model = DenseNet169(weights="imagenet", include_top=False, input_shape=input_shape)
@@ -245,16 +284,14 @@ def build_model(
     else:
         base_model = EfficientNetB0(weights="imagenet", include_top=False, input_shape=input_shape)
 
-    # Freeze backbone initially
     base_model.trainable = False
+    x = base_model(image_input)
 
-    x = base_model.output
-
-    # 1. CBAM Attention Module (reduction_ratio=8)
+    # 1. CBAM Attention Module
     if use_cbam:
         x = CBAM(reduction_ratio=cbam_reduction_ratio, name="cbam_attention")(x)
 
-    # 2. GeM Pooling Combinations (gem_gap, gem_gmp, or gem_only)
+    # 2. Dual Feature Pooling (GAP + GMP / GeM)
     if use_gem:
         gem_pool = GeMPooling2D(name="gem_pooling")(x)
         if pooling_mode == "gem_gap":
@@ -266,32 +303,35 @@ def build_model(
         else:
             x = gem_pool
     else:
-        gap = GlobalAveragePooling2D()(x)
-        gmp = GlobalMaxPooling2D()(x)
-        x = Concatenate()([gap, gmp])
+        gap = GlobalAveragePooling2D(name="gap")(x)
+        gmp = GlobalMaxPooling2D(name="gmp")(x)
+        x = Concatenate(name="dual_pooling")([gap, gmp])
 
-    x = BatchNormalization()(x)
-    x = Dropout(dropout_rate_head)(x)
+    x = BatchNormalization(name="visual_bn")(x)
+    x = Dropout(dropout_rate_head, name="visual_dropout")(x)
+    visual_features = Dense(512, activation="relu", kernel_initializer="he_normal", kernel_regularizer=l2(l2_strength), name="visual_dense")(x)
 
-    # 3. Enhanced 512 -> 256 Dense Head with He Normal Initialization
-    x = Dense(512, activation="relu", kernel_initializer="he_normal", kernel_regularizer=l2(l2_strength))(x)
-    x = BatchNormalization()(x)
-    x = Dropout(dropout_rate_dense)(x)
+    if enable_multimodal:
+        metadata_input = tf.keras.layers.Input(shape=(metadata_dim,), name="metadata_input")
+        meta = Dense(32, activation="relu", kernel_initializer="he_normal", name="meta_dense1")(metadata_input)
+        meta = BatchNormalization(name="meta_bn1")(meta)
+        meta = Dense(16, activation="relu", kernel_initializer="he_normal", name="meta_dense2")(meta)
+        meta = BatchNormalization(name="meta_bn2")(meta)
 
-    x = Dense(256, activation="relu", kernel_initializer="he_normal", kernel_regularizer=l2(l2_strength))(x)
-    x = BatchNormalization()(x)
-    x = Dropout(dropout_rate_dense)(x)
+        fused = Concatenate(name="fusion")([visual_features, meta])
+        model_inputs = [image_input, metadata_input]
+    else:
+        fused = visual_features
+        model_inputs = image_input
 
-    output = Dense(num_classes, activation="softmax", kernel_initializer="he_normal")(x)
+    fused = Dense(256, activation="relu", kernel_initializer="he_normal", kernel_regularizer=l2(l2_strength), name="fusion_dense")(fused)
+    fused = BatchNormalization(name="fusion_bn")(fused)
+    fused = Dropout(dropout_rate_dense, name="fusion_dropout")(fused)
 
-    model = Model(inputs=base_model.input, outputs=output)
+    output = Dense(num_classes, activation="softmax", kernel_initializer="he_normal", name="predictions")(fused)
 
+    model = Model(inputs=model_inputs, outputs=output, name="Multimodal_SkinLesion_Net")
     loss_fn = get_loss_function(label_smoothing=label_smoothing)
-
-    # 4. Adam Optimizer with L2 regularization (applied via kernel_regularizer in Dense layers)
-    # Note: AdamW from tf.keras.optimizers.experimental crashes with DirectML on TF 2.10.
-    # L2 weight decay is already enforced by kernel_regularizer=l2(l2_strength) in each Dense layer,
-    # so the regularization effect is identical.
     optimizer = Adam(learning_rate=learning_rate)
 
     model.compile(

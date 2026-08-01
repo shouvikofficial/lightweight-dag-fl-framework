@@ -78,8 +78,7 @@ from sklearn.metrics import (
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
-from preprocessing.balancing import get_class_weights
-from models.model import build_model, unfreeze_model
+from models.model import build_model, unfreeze_model, sanity_check
 
 
 # ============================================
@@ -576,9 +575,9 @@ def train(args):
             )
         ]
 
-    # ----------------------------------------
-    # PHASE 1: TRAIN HEAD ONLY
-    # ----------------------------------------
+    # Fast-Fail Sanity Check
+    sanity_check(model, train_gen, label="before Phase 1 (Centralized Head Warmup)")
+
     print(f"\n[4/4] Phase 1: Training classification head ({args.epochs} epochs, Scheduler={args.lr_scheduler.upper()})...")
     history1 = model.fit(
         train_gen,

@@ -138,7 +138,10 @@ def _evaluate_global_test(weights, model_name="densenet121") -> dict:
     y_prob = []
     for i in range(len(test_gen)):
         x_batch, y_batch = test_gen[i]
-        y_pred = model.predict(x_batch, verbose=0)
+        if isinstance(x_batch, (list, tuple)):
+            y_pred = model.predict([x_batch[0], x_batch[1]], verbose=0)
+        else:
+            y_pred = model.predict(x_batch, verbose=0)
         y_true.append(y_batch)
         y_prob.append(y_pred)
 

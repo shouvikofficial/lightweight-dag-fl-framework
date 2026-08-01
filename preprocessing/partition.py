@@ -226,6 +226,92 @@ def create_partitions(
 # ENTRY POINT
 # ============================================
 
-if __name__ == "__main__":
+def create_demographic_partitions(
+    csv_path=CSV_PATH,
+    meta_path="dataset/raw/ISIC_2019_Training_Metadata.csv",
+    output_dir=OUTPUT_DIR,
+    global_test_ratio=GLOBAL_TEST_RATIO,
+    seed=42,
+):
+    """
+    Partitions ISIC 2019 dataset into 4 demographic hospital clients (Option 3):
+      client_1: Elderly Patients (Age > 60)
+      client_2: Young/Adult Patients (Age <= 40)
+      client_3: Head/Neck & Upper Extremities Clinic
+      client_4: Torso & Lower Extremities Clinic
+    """
+    random.seed(seed)
+    os.makedirs(output_dir, exist_ok=True)
 
-    create_partitions()
+    df_gt = pd.read_csv(csv_path)
+    df_gt["image_clean"] = df_gt["image"].astype(str).str.strip().str.replace(r"\.jpg$", "", regex=True)
+
+    # Extract single label
+    labels = []
+    for _, row in df_gt.iterrows():
+        lbl = "NV"
+        for c in CLASS_NAMES:
+            if c in row and row[c] == 1:
+                lbl = c
+                break
+        labels.append(lbl)
+    df_gt["label"] = labels
+
+    if not os.path.exists(meta_path):
+        meta_path = "dataset/ISIC_2019_Training_Metadata.csv"
+
+    if os.path.exists(meta_path):
+        df_meta = pd.read_csv(meta_path)
+        df_meta["image_clean"] = df_meta["image"].astype(str).str.strip().str.replace(r"\.jpg$", "", regex=True)
+        df = pd.merge(df_gt, df_meta[["image_clean", "age_approx", "sex", "anatom_site_general"]], on="image_clean", how="left")
+    else:
+        df = df_gt.copy()
+        df["age_approx"] = 50.0
+        df["sex"] = "unknown"
+        df["anatom_site_general"] = "unknown"
+
+    df["image"] = df["image_clean"] + ".jpg"
+
+    # Reserve Global Test set (Stratified)
+    test_rows, train_rows = [], []
+    for cname in CLASS_NAMES:
+        cdf = df[df["label"] == cname].sample(frac=1.0, random_state=seed)
+        n_test = int(len(cdf) * global_test_ratio)
+        test_rows.append(cdf.iloc[:n_test])
+        train_rows.append(cdf.iloc[n_test:])
+
+    test_df = pd.concat(test_rows, ignore_index=True)
+    train_df = pd.concat(train_rows, ignore_index=True)
+
+    test_df[["image", "label"]].to_csv(os.path.join(output_dir, "global_test.csv"), index=False)
+    print(f"[DEMOGRAPHIC PARTITION] ✅ Global test set saved: {len(test_df)} samples.")
+
+    # Assign clients based on demographic criteria
+    c1_mask = train_df["age_approx"] > 60
+    c2_mask = train_df["age_approx"] <= 40
+    c3_mask = (~c1_mask) & (~c2_mask) & (train_df["anatom_site_general"].isin(["head/neck", "upper extremity"]))
+    c4_mask = (~c1_mask) & (~c2_mask) & (~c3_mask)
+
+    client_dfs = {
+        "client_1": train_df[c1_mask],
+        "client_2": train_df[c2_mask],
+        "client_3": train_df[c3_mask],
+        "client_4": train_df[c4_mask],
+    }
+
+    for cid, cdf in client_dfs.items():
+        save_p = os.path.join(output_dir, f"{cid}.csv")
+        cdf[["image", "label"]].to_csv(save_p, index=False)
+        print(f"[DEMOGRAPHIC PARTITION] ✅ {cid}: {len(cdf)} samples saved to {save_p}")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="demographic", choices=["demographic", "class_bias"])
+    args = parser.parse_args()
+
+    if args.mode == "demographic":
+        create_demographic_partitions()
+    else:
+        create_partitions()

@@ -23,9 +23,9 @@ from sklearn.metrics import (
 # SOTA IMPROVEMENT 5: TEST-TIME AUGMENTATION (TTA)
 # ============================================
 
-def predict_batch_with_tta(model, x_batch: np.ndarray) -> np.ndarray:
+def predict_batch_with_tta(model, inputs) -> np.ndarray:
     """
-    Predict probabilities across 5 spatial variations of image batch:
+    Predict probabilities across 5 spatial variations of image batch (with metadata passed through):
       1. Original
       2. Horizontal Flip
       3. Vertical Flip
@@ -33,12 +33,22 @@ def predict_batch_with_tta(model, x_batch: np.ndarray) -> np.ndarray:
       5. 90-degree Rotation
     Averages predictions across all 5 views.
     """
-    p1 = model.predict(x_batch, verbose=0)
-    p2 = model.predict(np.flip(x_batch, axis=2), verbose=0)
-    p3 = model.predict(np.flip(x_batch, axis=1), verbose=0)
-    p4 = model.predict(np.flip(np.flip(x_batch, axis=1), axis=2), verbose=0)
-    p5 = model.predict(np.rot90(x_batch, k=1, axes=(1, 2)), verbose=0)
-    return (p1 + p2 + p3 + p4 + p5) / 5.0
+    if isinstance(inputs, (list, tuple)):
+        x_img, x_meta = inputs[0], inputs[1]
+        p1 = model.predict([x_img, x_meta], verbose=0)
+        p2 = model.predict([np.flip(x_img, axis=2), x_meta], verbose=0)
+        p3 = model.predict([np.flip(x_img, axis=1), x_meta], verbose=0)
+        p4 = model.predict([np.flip(np.flip(x_img, axis=1), axis=2), x_meta], verbose=0)
+        p5 = model.predict([np.rot90(x_img, k=1, axes=(1, 2)), x_meta], verbose=0)
+        return (p1 + p2 + p3 + p4 + p5) / 5.0
+    else:
+        x_img = inputs
+        p1 = model.predict(x_img, verbose=0)
+        p2 = model.predict(np.flip(x_img, axis=2), verbose=0)
+        p3 = model.predict(np.flip(x_img, axis=1), verbose=0)
+        p4 = model.predict(np.flip(np.flip(x_img, axis=1), axis=2), verbose=0)
+        p5 = model.predict(np.rot90(x_img, k=1, axes=(1, 2)), verbose=0)
+        return (p1 + p2 + p3 + p4 + p5) / 5.0
 
 
 def compute_pr_auc_macro(y_true_oh: np.ndarray, y_prob: np.ndarray) -> float:
