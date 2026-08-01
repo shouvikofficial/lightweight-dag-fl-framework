@@ -191,23 +191,15 @@ class CategoricalFocalLoss(tf.keras.losses.Loss):
         return config
 
 
-def get_loss_function(label_smoothing=0.1):
+def get_loss_function(label_smoothing=0.02):
     """
-    Returns Focal Loss compatible with TF 2.10+.
-    Tries built-in CategoricalFocalCrossentropy first (TF >= 2.11),
-    falls back to custom implementation for TF 2.10.
+    Returns CategoricalCrossentropy with mild label smoothing (0.02)
+    to maximize overall top-1 accuracy while maintaining high ROC-AUC.
     """
-    try:
-        return tf.keras.losses.CategoricalFocalCrossentropy(
-            alpha=0.25, gamma=2.0,
-            from_logits=False, label_smoothing=label_smoothing,
-        )
-    except AttributeError:
-        # TF 2.10 — use custom implementation (identical math)
-        return CategoricalFocalLoss(
-            alpha=0.25, gamma=2.0, label_smoothing=label_smoothing,
-            name="focal_loss",
-        )
+    return tf.keras.losses.CategoricalCrossentropy(
+        label_smoothing=label_smoothing,
+        from_logits=False,
+    )
 
 
 # ============================================
@@ -258,10 +250,10 @@ def build_model(
     l2_strength=1e-4,
     learning_rate=5e-4,
     auc_name="auc",
-    use_cbam=True,
+    use_cbam=False,
     use_gem=True,
     pooling_mode="gem_gap",
-    label_smoothing=0.1,
+    label_smoothing=0.02,
     cbam_reduction_ratio=8,
     enable_multimodal=True,
 ):
@@ -284,6 +276,7 @@ def build_model(
     else:
         base_model = EfficientNetB0(weights="imagenet", include_top=False, input_shape=input_shape)
 
+    base_model._name = "backbone"
     base_model.trainable = False
     x = base_model(image_input)
 
@@ -390,6 +383,8 @@ def unfreeze_model(
     fine_tune_at = min(fine_tune_at, len(backbone_layers))
     for layer in backbone_layers[:fine_tune_at]:
         layer.trainable = False
+    for layer in backbone_layers[fine_tune_at:]:
+        layer.trainable = True
 
     if keep_batch_norm_frozen:
         for layer in backbone_layers:

@@ -120,7 +120,7 @@ def _log(message):
         f.write(line + "\n")
 
 
-def _evaluate_global_test(weights, model_name="densenet121") -> dict:
+def _evaluate_global_test(weights, model_name="densenet121", use_tta=True) -> dict:
     test_gen = prepare_global_test_generator(
         GLOBAL_TEST_CSV,
         IMAGE_ROOT,
@@ -138,10 +138,13 @@ def _evaluate_global_test(weights, model_name="densenet121") -> dict:
     y_prob = []
     for i in range(len(test_gen)):
         x_batch, y_batch = test_gen[i]
-        if isinstance(x_batch, (list, tuple)):
-            y_pred = model.predict([x_batch[0], x_batch[1]], verbose=0)
+        if use_tta:
+            y_pred = predict_batch_with_tta(model, x_batch)
         else:
-            y_pred = model.predict(x_batch, verbose=0)
+            if isinstance(x_batch, (list, tuple)):
+                y_pred = model.predict([x_batch[0], x_batch[1]], verbose=0)
+            else:
+                y_pred = model.predict(x_batch, verbose=0)
         y_true.append(y_batch)
         y_prob.append(y_pred)
 

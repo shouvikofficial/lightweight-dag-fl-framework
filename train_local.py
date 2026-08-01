@@ -78,6 +78,7 @@ from sklearn.metrics import (
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
+from preprocessing.balancing import get_class_weights
 from models.model import build_model, unfreeze_model, sanity_check
 
 
@@ -229,25 +230,32 @@ def verify_dataset_integrity(df, name="dataset"):
 from models.model import build_model, unfreeze_model, get_preprocess_input
 
 
+from preprocessing.dataset_loader import DualInputGenerator, load_and_preprocess_metadata, remove_hair_cv
+
+
 # ============================================
 # DYNAMIC GENERATOR BUILDERS
 # ============================================
 
-def build_train_generator(df, batch_size, seed, model_name="densenet121"):
-    """Augmented training generator with backbone-matched preprocessing."""
-    prep_fn = get_preprocess_input(model_name)
+def build_train_generator(df, batch_size, seed, model_name="densenet121", enable_multimodal=True):
+    """Augmented training generator with DullRazor hair removal and dual-input metadata."""
+    base_prep = get_preprocess_input(model_name)
+    def combined_prep(img):
+        img = remove_hair_cv(img)
+        return base_prep(img)
+
     datagen = ImageDataGenerator(
-        preprocessing_function=prep_fn,
+        preprocessing_function=combined_prep,
         rotation_range=30,
         width_shift_range=0.15,
         height_shift_range=0.15,
         zoom_range=0.15,
         brightness_range=[0.8, 1.2],
         horizontal_flip=True,
-        vertical_flip=False,
+        vertical_flip=True,
         fill_mode="reflect",
     )
-    return datagen.flow_from_dataframe(
+    gen = datagen.flow_from_dataframe(
         df,
         directory=IMAGE_ROOT,
         x_col="image",
@@ -259,13 +267,21 @@ def build_train_generator(df, batch_size, seed, model_name="densenet121"):
         shuffle=True,
         seed=seed,
     )
+    meta_lookup = load_and_preprocess_metadata()
+    if enable_multimodal and meta_lookup:
+        gen = DualInputGenerator(gen, meta_lookup)
+    return gen
 
 
-def build_eval_generator(df, batch_size, seed, model_name="densenet121"):
-    """No-augmentation generator with backbone-matched preprocessing for val/test evaluation."""
-    prep_fn = get_preprocess_input(model_name)
-    datagen = ImageDataGenerator(preprocessing_function=prep_fn)
-    return datagen.flow_from_dataframe(
+def build_eval_generator(df, batch_size, seed, model_name="densenet121", enable_multimodal=True):
+    """No-augmentation generator with DullRazor hair removal and dual-input metadata."""
+    base_prep = get_preprocess_input(model_name)
+    def combined_prep(img):
+        img = remove_hair_cv(img)
+        return base_prep(img)
+
+    datagen = ImageDataGenerator(preprocessing_function=combined_prep)
+    gen = datagen.flow_from_dataframe(
         df,
         directory=IMAGE_ROOT,
         x_col="image",
@@ -277,6 +293,10 @@ def build_eval_generator(df, batch_size, seed, model_name="densenet121"):
         shuffle=False,
         seed=seed,
     )
+    meta_lookup = load_and_preprocess_metadata()
+    if enable_multimodal and meta_lookup:
+        gen = DualInputGenerator(gen, meta_lookup)
+    return gen
 
 
 from models.evaluate import evaluate_model, predict_batch_with_tta, compute_pr_auc_macro
@@ -590,15 +610,12 @@ def train(args):
 
     histories = [history1]
 
-    # ----------------------------------------
-    # PHASE 2: FINE-TUNE BACKBONE
-    # ----------------------------------------
     if args.finetune_epochs > 0:
         print(f"\n[Fine-tune] Unfreezing top backbone layers for {args.model_name} ({args.finetune_epochs} epochs)...")
-        model = unfreeze_model(model, fine_tune_at=None, learning_rate=5e-5, model_name=args.model_name)
+        model = unfreeze_model(model, fine_tune_at=None, learning_rate=1e-4, model_name=args.model_name)
 
         if args.lr_scheduler == "cosine":
-            callbacks_p2 = base_callbacks_p2 + [make_cosine_callback(initial_lr=5e-5, total_epochs=args.finetune_epochs)]
+            callbacks_p2 = base_callbacks_p2 + [make_cosine_callback(initial_lr=1e-4, total_epochs=args.finetune_epochs)]
         else:
             callbacks_p2 = base_callbacks_p2 + [
                 tf.keras.callbacks.ReduceLROnPlateau(

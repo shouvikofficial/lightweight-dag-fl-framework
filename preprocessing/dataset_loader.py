@@ -1,5 +1,11 @@
 import os
-import cv2
+
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
+
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -32,16 +38,28 @@ CLASS_NAMES = [
 
 
 # ============================================
-# DULLRAZOR HAIR REMOVAL PREPROCESSING
+# DULLRAZOR HAIR REMOVAL & SHADES-OF-GRAY COLOR CONSTANCY
 # ============================================
 
+def shades_of_gray_cv(image_np: np.ndarray, power: int = 6) -> np.ndarray:
+    """
+    Applies Shades-of-Gray (Minkowski p-norm, p=6) color constancy to normalize
+    camera lighting and white-balance skin lesion images.
+    """
+    try:
+        img_float = image_np.astype(np.float32)
+        illum_e = np.power(np.mean(np.power(np.abs(img_float), power), axis=(0, 1)), 1.0 / power)
+        illum_e = np.where(illum_e == 0, 1e-6, illum_e)
+        scale = np.mean(illum_e)
+        normalized = img_float / illum_e * scale
+        return np.clip(normalized, 0, 255).astype(np.float32)
+    except Exception:
+        return image_np.astype(np.float32)
+
+
 def remove_hair_cv(image_np: np.ndarray) -> np.ndarray:
-    """
-    DullRazor-style hair removal:
-    1. Blackhat morphological filter to isolate thin hair structures.
-    2. Binary thresholding to create a hair mask.
-    3. Telea inpainting to smooth out hair while preserving lesion texture.
-    """
+    if not HAS_CV2:
+        return image_np.astype(np.float32)
     try:
         image_uint8 = np.clip(image_np, 0, 255).astype(np.uint8)
         gray = cv2.cvtColor(image_uint8, cv2.COLOR_RGB2GRAY)
@@ -52,6 +70,7 @@ def remove_hair_cv(image_np: np.ndarray) -> np.ndarray:
         return inpainted.astype(np.float32)
     except Exception:
         return image_np.astype(np.float32)
+
 
 
 # ============================================
@@ -159,13 +178,18 @@ class DualInputGenerator(tf.keras.utils.Sequence):
 # ============================================
 
 def load_image(image_path, image_size=IMAGE_SIZE):
-    image = cv2.imread(image_path)
-    if image is None:
-        raise ValueError(f"Could not load image: {image_path}")
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image = cv2.resize(image, (image_size, image_size))
-    image = remove_hair_cv(image)
-    return image.astype(np.float32)
+    if HAS_CV2:
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError(f"Could not load image: {image_path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (image_size, image_size))
+        image = remove_hair_cv(image)
+        return image.astype(np.float32)
+    else:
+        from PIL import Image
+        img = Image.open(image_path).convert("RGB").resize((image_size, image_size))
+        return np.array(img, dtype=np.float32)
 
 
 # ============================================
@@ -195,6 +219,7 @@ def prepare_client_generators(
 
     base_prep = get_preprocess_input(model_name)
     def combined_prep(img):
+        img = shades_of_gray_cv(img)
         img = remove_hair_cv(img)
         return base_prep(img)
 
