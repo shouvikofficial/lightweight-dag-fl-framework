@@ -73,6 +73,7 @@ from sklearn.metrics import (
     f1_score, roc_auc_score, accuracy_score,
     classification_report, confusion_matrix,
     balanced_accuracy_score, precision_score, recall_score,
+    matthews_corrcoef, cohen_kappa_score,
 )
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications.efficientnet import preprocess_input
@@ -646,7 +647,7 @@ def train(args):
     print(f"  TRAINING COMPLETE")
     print(f"{'='*50}")
     print(f"  Mode             : {mode_label}")
-    print(f"  Best Model       : {CHECKPOINT_DIR}/centralized_best.keras")
+    print(f"  Best Model       : {ckpt_filepath}")
     print(f"  Final Model      : {final_path}")
     print(f"  Metrics JSON     : {metrics_path}")
     print(f"  Training Log CSV : {CHECKPOINT_DIR}/centralized_training_log.csv")

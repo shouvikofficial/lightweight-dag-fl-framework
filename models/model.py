@@ -357,7 +357,7 @@ def unfreeze_model(
                 layer.trainable = False
 
     loss_fn = get_loss_function(label_smoothing=label_smoothing)
-    optimizer = AdamW(learning_rate=learning_rate, weight_decay=l2_strength)
+    optimizer = Adam(learning_rate=learning_rate)
 
     model.compile(
         optimizer=optimizer,
