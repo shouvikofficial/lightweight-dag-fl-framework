@@ -312,7 +312,7 @@ def prepare_client_generators(
         zoom_range=0.15,
         brightness_range=[0.8, 1.2],
         horizontal_flip=True,
-        vertical_flip=False,
+        vertical_flip=True,
         fill_mode="reflect",
     )
 
