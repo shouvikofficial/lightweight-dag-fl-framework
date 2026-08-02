@@ -325,7 +325,7 @@ def build_model(
 
     model = Model(inputs=model_inputs, outputs=output, name="Multimodal_SkinLesion_Net")
     loss_fn = get_loss_function(label_smoothing=label_smoothing)
-    optimizer = Adam(learning_rate=learning_rate)
+    optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
 
     model.compile(
         optimizer=optimizer,
@@ -392,7 +392,8 @@ def unfreeze_model(
                 layer.trainable = False
 
     loss_fn = get_loss_function(label_smoothing=label_smoothing)
-    optimizer = Adam(learning_rate=learning_rate)
+    optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
+
 
     model.compile(
         optimizer=optimizer,
