@@ -30,10 +30,7 @@ CLASS_NAMES = [
     "NV",
     "BKL",
     "BCC",
-    "AK",
     "VASC",
-    "DF",
-    "SCC",
 ]
 
 

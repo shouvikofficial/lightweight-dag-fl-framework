@@ -178,7 +178,7 @@ class FLClient(fl.client.NumPyClient):
                 y_sample_batches.append(y_batch)
             y_sample = np.concatenate(y_sample_batches, axis=0)
             try:
-                class_weights = get_class_weights(y_sample, class_labels=list(range(8)), num_classes=8)
+                class_weights = get_class_weights(y_sample, class_labels=list(range(5)), num_classes=5)
                 self._log(
                     f"Class weights computed: "
                     + " | ".join(
@@ -201,7 +201,7 @@ class FLClient(fl.client.NumPyClient):
         else:
             y_train_arr = self.y_train
             try:
-                class_weights = get_class_weights(y_train_arr, class_labels=list(range(8)), num_classes=8)
+                class_weights = get_class_weights(y_train_arr, class_labels=list(range(5)), num_classes=5)
                 self._log(
                     f"Class weights computed: "
                     + " | ".join(

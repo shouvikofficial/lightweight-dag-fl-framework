@@ -244,7 +244,7 @@ def build_model(
     model_name="densenet121",
     input_shape=(224, 224, 3),
     metadata_dim=3,
-    num_classes=8,
+    num_classes=5,
     dropout_rate_head=0.4,
     dropout_rate_dense=0.35,
     l2_strength=1e-4,

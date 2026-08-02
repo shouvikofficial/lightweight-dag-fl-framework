@@ -92,8 +92,8 @@ CHECKPOINT_DIR  = "models/checkpoints"
 PLOTS_DIR       = "models/plots"
 GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
 
-CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
-NUM_CLASSES = 8
+CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "VASC"]
+NUM_CLASSES = 5
 IMAGE_SIZE  = 224
 BATCH_SIZE  = 16    # identical to FL pipeline
 SEED        = 42
@@ -605,6 +605,8 @@ def train(args):
         epochs=args.epochs,
         class_weight=class_weights,
         callbacks=callbacks_p1,
+        workers=4,
+        max_queue_size=10,
         verbose=1,  # clean single-line progress bar per epoch
     )
 
@@ -629,9 +631,12 @@ def train(args):
             epochs=args.finetune_epochs,
             class_weight=class_weights,
             callbacks=callbacks_p2,
+            workers=4,
+            max_queue_size=10,
             verbose=1,  # clean single-line progress bar per epoch
         )
         histories.append(history2)
+
 
     # ----------------------------------------
     # FIX 8: SAVE TRAINING HISTORY PLOTS
