@@ -44,18 +44,29 @@ def get_class_weights(
     counts = np.bincount(y_int, minlength=max(target_classes) + 1)
 
     weights = {}
-    max_observed_w = 1.0
     for c in target_classes:
         cnt = counts[c] if c < len(counts) else 0
         if cnt > 0:
             w = n_samples / (n_classes * float(cnt))
-            # Cap extreme weight spikes at max_weight_cap (3.0)
-            w = min(w, max_weight_cap)
             weights[int(c)] = float(w)
-            if w > max_observed_w:
-                max_observed_w = w
         else:
             weights[int(c)] = -1.0
+
+    # -------------------------------------------------------------
+    # ASYMMETRIC WEIGHT NORMALIZATION (Anchored at 1.0)
+    # -------------------------------------------------------------
+    # Instead of punishing majority classes with weights < 1.0,
+    # we anchor the minimum weight strictly at 1.0 and boost the rest.
+    valid_weights = [w for w in weights.values() if w > 0]
+    if valid_weights:
+        min_w = min(valid_weights)
+        for c in weights:
+            if weights[c] > 0:
+                # Divide by min_w so majority class = 1.0 exactly
+                # Cap the boosted minority classes at max_weight_cap (e.g. 2.5)
+                weights[c] = min(weights[c] / min_w, max_weight_cap)
+
+    max_observed_w = max([w for w in weights.values() if w > 0], default=1.0)
 
     # Fill zero-count classes with the max observed weight cap
     for c in target_classes:

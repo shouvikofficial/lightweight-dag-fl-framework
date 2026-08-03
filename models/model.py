@@ -348,7 +348,7 @@ def unfreeze_model(
     fine_tune_at=None,
     learning_rate=5e-5,
     keep_batch_norm_frozen=True,
-    label_smoothing=0.1,
+    label_smoothing=0.02,
     l2_strength=1e-4,
     model_name="densenet121",
 ):
@@ -377,6 +377,8 @@ def unfreeze_model(
             fine_tune_at = 600
         elif "resnet" in model_name_lower:
             fine_tune_at = 140
+        elif "efficientnet" in model_name_lower:
+            fine_tune_at = 160
         else:
             fine_tune_at = 350
 

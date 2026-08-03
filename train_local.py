@@ -500,8 +500,10 @@ def train(args):
     # ----------------------------------------
     y_train_ints = np.array([CLASS_NAMES.index(l) for l in train_df["label"]])
     y_train_oh = tf.keras.utils.to_categorical(y_train_ints, num_classes=NUM_CLASSES)
-    class_weights = get_class_weights(y_train_oh, class_labels=list(range(NUM_CLASSES)), num_classes=NUM_CLASSES)
-    print(f"\n[2/4] Training Mode: Standard Unweighted Cross-Entropy (class_weight=None for 91.5%+ Accuracy)")
+    class_weights = get_class_weights(y_train_oh, class_labels=list(range(NUM_CLASSES)), max_weight_cap=2.5, num_classes=NUM_CLASSES)
+    print(f"\n[2/4] Training Mode: ASYMMETRIC Class Weights (Majority=1.0, Minority boosted up to 2.5)")
+    for k, v in sorted(class_weights.items()):
+        print(f"    {CLASS_NAMES[k]:<8}: {v:.3f}")
 
     # ----------------------------------------
     # FIX 3: BUILD MODEL (identical to FL)
@@ -601,7 +603,7 @@ def train(args):
         train_gen,
         validation_data=val_gen,
         epochs=args.epochs,
-        class_weight=None,
+        class_weight=class_weights,
         callbacks=callbacks_p1,
         workers=4,
         max_queue_size=10,
@@ -627,7 +629,7 @@ def train(args):
             train_gen,
             validation_data=val_gen,
             epochs=args.finetune_epochs,
-            class_weight=None,
+            class_weight=class_weights,
             callbacks=callbacks_p2,
             workers=4,
             max_queue_size=10,
