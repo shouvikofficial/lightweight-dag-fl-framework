@@ -1,2 +1,2 @@
-pro Title: **LIGHT**<div align="center">
+Project Title: **LIGHT**<div align="center">
 
