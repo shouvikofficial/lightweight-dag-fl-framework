@@ -92,8 +92,8 @@ CHECKPOINT_DIR  = "models/checkpoints"
 PLOTS_DIR       = "models/plots"
 GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
 
-CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "VASC"]
-NUM_CLASSES = 5
+CLASS_NAMES = ["MEL", "NV", "BKL", "BCC"]
+NUM_CLASSES = 4
 IMAGE_SIZE  = 224
 BATCH_SIZE  = 16    # identical to FL pipeline
 SEED        = 42
@@ -636,6 +636,8 @@ def train(args):
             verbose=1,  # clean single-line progress bar per epoch
         )
         histories.append(history2)
+
+
 
 
     # ----------------------------------------

@@ -7,10 +7,10 @@ from sklearn.utils.class_weight import compute_class_weight
 def get_class_weights(
     labels: np.ndarray,
     class_labels: Optional[Iterable[int]] = None,
-    num_classes: int = 5,
-    max_weight_cap: float = 3.0,
+    num_classes: int = 4,
+    max_weight_cap: float = 1.8,
 ) -> Dict[int, float]:
-    """Compute balanced class weights capped at max_weight_cap=3.0.
+    """Compute balanced class weights capped at max_weight_cap=1.8.
 
     Ensures all expected class IDs (0..num_classes-1) receive a valid float weight,
     while capping extreme weights at 3.0 to maximize top-1 diagnostic accuracy.
