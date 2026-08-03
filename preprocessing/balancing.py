@@ -7,12 +7,13 @@ from sklearn.utils.class_weight import compute_class_weight
 def get_class_weights(
     labels: np.ndarray,
     class_labels: Optional[Iterable[int]] = None,
-    num_classes: int = 8,
+    num_classes: int = 5,
+    max_weight_cap: float = 3.0,
 ) -> Dict[int, float]:
-    """Compute balanced class weights for integer or one-hot labels.
+    """Compute balanced class weights capped at max_weight_cap=3.0.
 
     Ensures all expected class IDs (0..num_classes-1) receive a valid float weight,
-    even if rare classes are absent from a local batch sample.
+    while capping extreme weights at 3.0 to maximize top-1 diagnostic accuracy.
     """
 
     if labels is None:
@@ -48,6 +49,8 @@ def get_class_weights(
         cnt = counts[c] if c < len(counts) else 0
         if cnt > 0:
             w = n_samples / (n_classes * float(cnt))
+            # Cap extreme weight spikes at max_weight_cap (3.0)
+            w = min(w, max_weight_cap)
             weights[int(c)] = float(w)
             if w > max_observed_w:
                 max_observed_w = w
@@ -57,6 +60,6 @@ def get_class_weights(
     # Fill zero-count classes with the max observed weight cap
     for c in target_classes:
         if weights[int(c)] < 0:
-            weights[int(c)] = float(max_observed_w)
+            weights[int(c)] = float(min(max_observed_w, max_weight_cap))
 
-    return weights
+    return weights
