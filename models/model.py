@@ -372,13 +372,13 @@ def unfreeze_model(
     if fine_tune_at is None:
         model_name_lower = str(model_name).lower()
         if "densenet169" in model_name_lower:
-            fine_tune_at = 160
+            fine_tune_at = 500
         elif "densenet201" in model_name_lower:
-            fine_tune_at = 190
+            fine_tune_at = 600
         elif "resnet" in model_name_lower:
-            fine_tune_at = 100
+            fine_tune_at = 140
         else:
-            fine_tune_at = 120
+            fine_tune_at = 350
 
     fine_tune_at = min(fine_tune_at, len(backbone_layers))
     for layer in backbone_layers[:fine_tune_at]:

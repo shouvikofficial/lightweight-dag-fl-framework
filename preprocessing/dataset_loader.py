@@ -215,8 +215,8 @@ def prepare_client_generators(
 
     base_prep = get_preprocess_input(model_name)
     def combined_prep(img):
-        img = shades_of_gray_cv(img)
         img = remove_hair_cv(img)
+        img = shades_of_gray_cv(img)
         return base_prep(img)
 
     train_datagen = ImageDataGenerator(
