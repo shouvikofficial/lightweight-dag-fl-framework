@@ -117,17 +117,19 @@ def load_and_preprocess_metadata(meta_csv_path="dataset/raw/ISIC_2019_Training_M
     age_mean = df["age_approx"].mean()
     age_std = df["age_approx"].std() if df["age_approx"].std() > 0 else 1.0
 
+    max_site = max(site_map.values()) if site_map and max(site_map.values()) > 0 else 1.0
     df["age_norm"] = (df["age_approx"] - age_mean) / age_std
-    df["sex_enc"] = df["sex"].map(lambda x: sex_map.get(str(x).lower(), 2.0))
-    df["site_enc"] = df["anatom_site_general"].map(lambda x: site_map.get(x, 0.0))
+    df["sex_enc"] = df["sex"].map(lambda x: sex_map.get(str(x).lower(), 2.0)) / 2.0
+    df["site_enc"] = df["anatom_site_general"].map(lambda x: site_map.get(x, 0.0)) / float(max_site)
 
     meta_dict = {}
     for _, row in df.iterrows():
         meta_dict[row["image"]] = np.array([row["age_norm"], row["sex_enc"], row["site_enc"]], dtype=np.float32)
 
     _CACHED_META_LOOKUP = meta_dict
-    print(f"[METADATA] ✅ Loaded metadata for {len(meta_dict)} images.")
+    print(f"[METADATA] ✅ Loaded metadata for {len(meta_dict)} images (normalized to [0.0, 1.0]).")
     return meta_dict
+
 
 
 class DualInputGenerator(tf.keras.utils.Sequence):
