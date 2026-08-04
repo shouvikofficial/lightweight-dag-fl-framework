@@ -22,7 +22,7 @@ from models.model import get_preprocess_input
 # CONFIGURATION
 # ============================================
 
-IMAGE_SIZE = 224
+IMAGE_SIZE = 256
 BATCH_SIZE = 16
 
 CLASS_NAMES = [

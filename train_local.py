@@ -94,7 +94,7 @@ GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
 
 CLASS_NAMES = ["MEL", "NV", "BKL", "BCC"]
 NUM_CLASSES = 4
-IMAGE_SIZE  = 224
+IMAGE_SIZE  = 256
 BATCH_SIZE  = 16    # identical to FL pipeline
 SEED        = 42
 
@@ -500,10 +500,7 @@ def train(args):
     # ----------------------------------------
     y_train_ints = np.array([CLASS_NAMES.index(l) for l in train_df["label"]])
     y_train_oh = tf.keras.utils.to_categorical(y_train_ints, num_classes=NUM_CLASSES)
-    class_weights = get_class_weights(y_train_oh, class_labels=list(range(NUM_CLASSES)), max_weight_cap=2.5, num_classes=NUM_CLASSES)
-    print(f"\n[2/4] Training Mode: ASYMMETRIC Class Weights (Majority=1.0, Minority boosted up to 2.5)")
-    for k, v in sorted(class_weights.items()):
-        print(f"    {CLASS_NAMES[k]:<8}: {v:.3f}")
+    print(f"\n[2/4] Training Mode: CATEGORICAL FOCAL LOSS (gamma=2.0, alpha=0.25) — Dynamic Hard Example Mining")
 
     # ----------------------------------------
     # FIX 3: BUILD MODEL (identical to FL)
@@ -550,6 +547,7 @@ def train(args):
             monitor="val_auc",
             mode="max",
             save_best_only=True,
+            save_weights_only=True,
             verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
@@ -571,12 +569,13 @@ def train(args):
             monitor="val_auc",
             mode="max",
             save_best_only=True,
+            save_weights_only=True,
             verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
             monitor="val_auc",
             mode="max",
-            patience=15,
+            patience=12,
             restore_best_weights=True,
             verbose=1,
         ),
@@ -603,7 +602,7 @@ def train(args):
         train_gen,
         validation_data=val_gen,
         epochs=args.epochs,
-        class_weight=class_weights,
+        class_weight=None,
         callbacks=callbacks_p1,
         workers=4,
         max_queue_size=10,
@@ -629,7 +628,7 @@ def train(args):
             train_gen,
             validation_data=val_gen,
             epochs=args.finetune_epochs,
-            class_weight=class_weights,
+            class_weight=None,
             callbacks=callbacks_p2,
             workers=4,
             max_queue_size=10,
@@ -663,9 +662,9 @@ def train(args):
         serializable["report"] = test_results["report"]
         json.dump(serializable, f, indent=2)
 
-    # Save final model
-    final_path = os.path.join(CHECKPOINT_DIR, "centralized_final.keras")
-    model.save(final_path)
+    # Save final model weights
+    final_path = os.path.join(CHECKPOINT_DIR, "centralized_final_weights.h5")
+    model.save_weights(final_path)
 
     print(f"\n{'='*50}")
     print(f"  TRAINING COMPLETE")

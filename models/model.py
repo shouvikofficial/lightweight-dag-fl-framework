@@ -191,11 +191,18 @@ class CategoricalFocalLoss(tf.keras.losses.Loss):
         return config
 
 
-def get_loss_function(label_smoothing=0.02):
+def get_loss_function(use_focal_loss=True, alpha=0.25, gamma=2.0, label_smoothing=0.02, num_classes=4):
     """
-    Returns CategoricalCrossentropy with mild label smoothing (0.02)
-    to maximize overall top-1 accuracy while maintaining high ROC-AUC.
+    Returns CategoricalFocalLoss (alpha=0.25, gamma=2.0) by default to eliminate
+    false positive trade-offs and maximize overall Precision, F1-Score, and Accuracy.
     """
+    if use_focal_loss:
+        return CategoricalFocalLoss(
+            alpha=alpha,
+            gamma=gamma,
+            label_smoothing=label_smoothing,
+            num_classes=num_classes,
+        )
     return tf.keras.losses.CategoricalCrossentropy(
         label_smoothing=label_smoothing,
         from_logits=False,
