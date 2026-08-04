@@ -3,17 +3,18 @@
  DUAL-MODEL ENSEMBLE EVALUATION (TTA = ON)
 ===================================================
 
-Loads trained checkpoints:
-  1. DenseNet201 (centralized_best_densenet201.keras)
-  2. ResNet50V2 (centralized_best_resnet50v2.keras)
+Loads trained model checkpoints (e.g. DenseNet201 + EfficientNetB0),
+runs 5-pass Test-Time Augmentation (TTA) for both models on unseen global test set,
+averages prediction probabilities, and computes complete ensemble metrics.
 
-Evaluates averaged predictions across 5 TTA views on the unseen global test set.
-Saves comprehensive metrics to models/checkpoints/ensemble_metrics.json.
+Usage:
+    python eval_ensemble.py --model1 densenet201 --model2 efficientnetb0
 """
 
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+import argparse
 import json
 import numpy as np
 import tensorflow as tf
@@ -31,84 +32,122 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from models.model import build_model, GeMPooling2D, CBAM, CategoricalFocalLoss
 from models.evaluate import predict_batch_with_tta, compute_pr_auc_macro
-from preprocessing.dataset_loader import prepare_global_test_generator, CLASS_NAMES
-
-# ============================================
-# CONFIGURATION
-# ============================================
+from preprocessing.dataset_loader import prepare_global_test_generator, CLASS_NAMES, IMAGE_SIZE
 
 GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
 IMAGE_ROOT = "dataset/raw/ISIC_2019_Training_Input"
-
-DENSENET_PATH = "models/checkpoints/centralized_best_densenet201.keras"
-RESNET_PATH = "models/checkpoints/centralized_best_resnet50v2.keras"
+CHECKPOINT_DIR = "models/checkpoints"
 OUTPUT_JSON = "models/checkpoints/ensemble_metrics.json"
 
 
-def evaluate_ensemble():
-    print("=" * 60)
-    print(" 🤖 DUAL-MODEL ENSEMBLE EVALUATION (DenseNet201 + ResNet50V2)")
-    print("=" * 60)
+import zipfile
 
-    # 1. Verify Checkpoint Existence
-    if not os.path.exists(DENSENET_PATH):
-        raise FileNotFoundError(f"Missing DenseNet201 checkpoint: {DENSENET_PATH}")
-    if not os.path.exists(RESNET_PATH):
-        raise FileNotFoundError(f"Missing ResNet50V2 checkpoint: {RESNET_PATH}")
+def load_trained_model(model_name: str):
+    """Builds model structure and loads best saved weights or full model."""
+    model_tag = str(model_name).lower()
+    ckpt_path = os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.keras")
+    
+    if not os.path.exists(ckpt_path):
+        ckpt_path = os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.h5")
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Missing checkpoint for {model_name}: {ckpt_path}")
 
-    # 2. Load Generator for DenseNet201
-    print("\n[1/4] Preparing test generators...")
-    test_gen_dense = prepare_global_test_generator(
-        GLOBAL_TEST_CSV, IMAGE_ROOT, model_name="densenet201"
+    print(f"Loading checkpoint for {model_name} from: {ckpt_path}")
+    custom_objs = {
+        "GeMPooling2D": GeMPooling2D,
+        "CBAM": CBAM,
+        "CategoricalFocalLoss": CategoricalFocalLoss,
+    }
+    
+    # 1. Attempt full model load
+    try:
+        model = tf.keras.models.load_model(ckpt_path, custom_objects=custom_objs, compile=False)
+        return model
+    except Exception:
+        pass
+
+    # 2. Build model architecture
+    model = build_model(
+        model_name=model_name,
+        input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3),
+        num_classes=len(CLASS_NAMES),
+        pooling_mode="gem_gap",
     )
     
-    # Load Generator for ResNet50V2
-    test_gen_resnet = prepare_global_test_generator(
-        GLOBAL_TEST_CSV, IMAGE_ROOT, model_name="resnet50v2"
+    # 3. Handle .keras Zip Archive Format
+    if zipfile.is_zipfile(ckpt_path):
+        tmp_dir = os.path.join(CHECKPOINT_DIR, f"tmp_{model_tag}")
+        os.makedirs(tmp_dir, exist_ok=True)
+        with zipfile.ZipFile(ckpt_path, "r") as zip_ref:
+            zip_ref.extractall(tmp_dir)
+            
+        h5_weights = None
+        for root, _, files in os.walk(tmp_dir):
+            for f in files:
+                if f.endswith(".h5"):
+                    h5_weights = os.path.join(root, f)
+                    break
+        if h5_weights:
+            model.load_weights(h5_weights, by_name=True, skip_mismatch=True)
+            return model
+
+    # 4. Standard HDF5 load
+    model.load_weights(ckpt_path, by_name=True, skip_mismatch=True)
+    return model
+
+
+def evaluate_ensemble(model1_name="densenet201", model2_name="efficientnetb0"):
+    print("=" * 60)
+    print(f" 🤖 DUAL-MODEL ENSEMBLE EVALUATION ({model1_name.upper()} + {model2_name.upper()})")
+    print("=" * 60)
+
+    print("\n[1/4] Preparing test generators...")
+    test_gen1 = prepare_global_test_generator(
+        GLOBAL_TEST_CSV, IMAGE_ROOT, model_name=model1_name
+    )
+    test_gen2 = prepare_global_test_generator(
+        GLOBAL_TEST_CSV, IMAGE_ROOT, model_name=model2_name
     )
 
-    # 3. Load Trained Models
-    print(f"\n[2/4] Loading DenseNet201 model from {DENSENET_PATH}...")
-    model_dense = tf.keras.models.load_model(DENSENET_PATH, compile=False)
+    print("\n[2/4] Building models and loading weights...")
+    m1 = load_trained_model(model1_name)
+    m2 = load_trained_model(model2_name)
 
-    print(f"[2/4] Loading ResNet50V2 model from {RESNET_PATH}...")
-    model_resnet = tf.keras.models.load_model(RESNET_PATH, compile=False)
-
-    # 4. Predict with TTA for Both Models
-    print("\n[3/4] Running TTA Evaluation on Unseen Test Set (5 Spatial Views)...")
-    y_prob_dense = []
-    y_prob_resnet = []
+    print("\n[3/4] Running TTA Evaluation on Unseen Test Set (5 Spatial Views per model)...")
+    y_prob1 = []
+    y_prob2 = []
     y_true_all = []
 
-    n_steps = len(test_gen_dense)
+    n_steps = len(test_gen1)
     for i in range(n_steps):
-        x_dense, y_batch = test_gen_dense[i]
-        x_resnet, _ = test_gen_resnet[i]
+        x1, y_batch = test_gen1[i]
+        x2, _ = test_gen2[i]
 
-        p_dense = predict_batch_with_tta(model_dense, x_dense)
-        p_resnet = predict_batch_with_tta(model_resnet, x_resnet)
+        p1 = predict_batch_with_tta(m1, x1)
+        p2 = predict_batch_with_tta(m2, x2)
 
-        y_prob_dense.append(p_dense)
-        y_prob_resnet.append(p_resnet)
+        y_prob1.append(p1)
+        y_prob2.append(p2)
         y_true_all.append(y_batch)
 
         print(f"\r  Evaluating TTA batch {i+1}/{n_steps}", end="", flush=True)
 
     print("\n✅ TTA Inference Complete!")
 
-    y_prob_dense = np.concatenate(y_prob_dense, axis=0)
-    y_prob_resnet = np.concatenate(y_prob_resnet, axis=0)
+    y_prob1 = np.concatenate(y_prob1, axis=0)
+    y_prob2 = np.concatenate(y_prob2, axis=0)
     y_true_oh = np.concatenate(y_true_all, axis=0)
 
-    # 5. Dual-Model Ensemble Probability Averaging
+    # 5. Dual-Model Ensemble Softmax Averaging
     print("\n[4/4] Computing Dual-Model Ensemble Consensus Probabilities...")
-    y_prob_ensemble = (y_prob_dense + y_prob_resnet) / 2.0
+    y_prob_ensemble = (y_prob1 + y_prob2) / 2.0
 
     y_true = np.argmax(y_true_oh, axis=1)
     y_pred = np.argmax(y_prob_ensemble, axis=1)
 
-    # 6. Compute Full Medical Metrics
+    # 6. Compute Full Metrics
     acc = accuracy_score(y_true, y_pred)
     bal_acc = balanced_accuracy_score(y_true, y_pred)
     macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
@@ -129,6 +168,7 @@ def evaluate_ensemble():
     print("\n" + "=" * 50)
     print(" 🏆 FINAL DUAL-MODEL ENSEMBLE METRICS (TTA=ON)")
     print("=" * 50)
+    print(f"  Models Ensembled : {model1_name.upper()} + {model2_name.upper()}")
     print(f"  Top-1 Accuracy   : {acc * 100:.2f}%")
     print(f"  Balanced Accuracy: {bal_acc * 100:.2f}%")
     print(f"  ROC-AUC (OvR)    : {roc_auc:.4f}")
@@ -144,7 +184,7 @@ def evaluate_ensemble():
 
     # 7. Save Metrics JSON
     results = {
-        "model_type": "Dual-Model Ensemble (DenseNet201 + ResNet50V2)",
+        "model_type": f"Dual-Model Ensemble ({model1_name.upper()} + {model2_name.upper()})",
         "tta_enabled": True,
         "test_samples": len(y_true),
         "accuracy": float(acc),
@@ -157,6 +197,7 @@ def evaluate_ensemble():
         "mcc": float(mcc),
         "cohen_kappa": float(kappa),
         "confusion_matrix": cm.tolist(),
+        "report": report,
     }
 
     os.makedirs(os.path.dirname(OUTPUT_JSON), exist_ok=True)
@@ -167,4 +208,9 @@ def evaluate_ensemble():
 
 
 if __name__ == "__main__":
-    evaluate_ensemble()
+    parser = argparse.ArgumentParser(description="Dual-Model Ensemble Evaluation")
+    parser.add_argument("--model1", type=str, default="densenet201", help="First model backbone")
+    parser.add_argument("--model2", type=str, default="efficientnetb0", help="Second model backbone")
+    args = parser.parse_args()
+
+    evaluate_ensemble(args.model1, args.model2)
