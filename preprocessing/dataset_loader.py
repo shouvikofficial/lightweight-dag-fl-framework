@@ -171,8 +171,43 @@ class DualInputGenerator(tf.keras.utils.Sequence):
         )
         return x_img, meta_batch, y
 
+    def _apply_class_specific_aug(self, img_np: np.ndarray, label_vec: np.ndarray) -> np.ndarray:
+        """
+        Applies strong class-specific dynamic augmentation for minority cancers (MEL, AK, BCC, BKL)
+        while preserving standard natural augmentation for majority benign moles (NV).
+        """
+        cls_idx = int(np.argmax(label_vec))
+        # 0: MEL, 1: NV, 2: BKL, 3: BCC, 4: AK
+        is_minority_cancer = (cls_idx in [0, 2, 3, 4])
+
+        if is_minority_cancer:
+            # 1. Multi-angle Orthogonal Rotation (90, 180, 270 deg)
+            k = np.random.choice([0, 1, 2, 3])
+            if k > 0:
+                img_np = np.rot90(img_np, k=k)
+
+            # 2. Random Flips
+            if np.random.rand() > 0.5:
+                img_np = np.fliplr(img_np)
+            if np.random.rand() > 0.5:
+                img_np = np.flipud(img_np)
+
+            # 3. Dynamic Photometric / Brightness Perturbation
+            alpha = np.random.uniform(0.90, 1.10)
+            beta = np.random.uniform(-10.0, 10.0)
+            img_np = np.clip(img_np * alpha + beta, 0.0, 255.0)
+
+        return img_np
+
     def __getitem__(self, idx):
         x_img, meta_batch, y = self._get_batch(idx)
+
+        # Apply class-specific dynamic augmentation to each image in batch
+        augmented_imgs = []
+        for i in range(len(x_img)):
+            aug_img = self._apply_class_specific_aug(x_img[i].copy(), y[i])
+            augmented_imgs.append(aug_img)
+        x_img = np.array(augmented_imgs, dtype=np.float32)
 
         if self.use_mixup:
             # Pick a random second batch to mix with
@@ -185,7 +220,7 @@ class DualInputGenerator(tf.keras.utils.Sequence):
             x_img2, meta_batch2, y2 = x_img2[:min_bs], meta_batch2[:min_bs], y2[:min_bs]
 
             lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-            x_img     = lam * x_img     + (1 - lam) * x_img2
+            x_img      = lam * x_img      + (1 - lam) * x_img2
             meta_batch = lam * meta_batch + (1 - lam) * meta_batch2
             y          = lam * y          + (1 - lam) * y2
 
