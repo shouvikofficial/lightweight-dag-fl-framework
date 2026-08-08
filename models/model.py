@@ -1,5 +1,8 @@
+from communication.bandwidth_monitor import np
 import tensorflow as tf
 
+# pyrefly: ignore [missing-import]
+# type: ignore
 from tensorflow.keras.applications import (
     EfficientNetB0,
     DenseNet121,
@@ -35,12 +38,15 @@ def get_preprocess_input(model_name="densenet121"):
     """
     model_name_lower = str(model_name).lower()
     if "densenet" in model_name_lower:
+        # pyrefly: ignore [missing-import]
         from tensorflow.keras.applications.densenet import preprocess_input
         return preprocess_input
     elif "resnet" in model_name_lower:
+        # pyrefly: ignore [missing-import]
         from tensorflow.keras.applications.resnet_v2 import preprocess_input
-        return preprocess_input
+        return preprocess_input     
     else:
+        # pyrefly: ignore [missing-import]
         from tensorflow.keras.applications.efficientnet import preprocess_input
         return preprocess_input
 
@@ -148,8 +154,8 @@ class GeMPooling2D(Layer):
     def get_config(self):
         config = super().get_config()
         config.update({
-            "init_p": self.init_p,
-            "eps": self.eps,
+            "init_p": float(self.init_p),
+            "eps": float(self.eps),
         })
         return config
 
@@ -251,7 +257,7 @@ def build_model(
     model_name="densenet121",
     input_shape=(224, 224, 3),
     metadata_dim=3,
-    num_classes=4,
+    num_classes=5,
     dropout_rate_head=0.4,
     dropout_rate_dense=0.35,
     l2_strength=1e-4,

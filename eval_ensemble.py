@@ -3,9 +3,9 @@
  DUAL-MODEL ENSEMBLE EVALUATION (TTA = ON)
 ===================================================
 
-Loads trained model checkpoints (e.g. DenseNet201 + EfficientNetB0),
-runs 5-pass Test-Time Augmentation (TTA) for both models on unseen global test set,
-averages prediction probabilities, and computes complete ensemble metrics.
+Loads trained model checkpoints (DenseNet201 + EfficientNetB0),
+runs 5-pass Test-Time Augmentation (TTA) on unseen global test set,
+averages prediction probabilities, and computes ensemble metrics.
 
 Usage:
     python eval_ensemble.py --model1 densenet201 --model2 efficientnetb0
@@ -24,7 +24,6 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     classification_report,
     cohen_kappa_score,
-    confusion_matrix,
     f1_score,
     matthews_corrcoef,
     precision_score,
@@ -33,137 +32,144 @@ from sklearn.metrics import (
 )
 
 from models.model import build_model, GeMPooling2D, CBAM, CategoricalFocalLoss
-from models.evaluate import predict_batch_with_tta, compute_pr_auc_macro
+from models.evaluate import compute_pr_auc_macro, predict_batch_with_tta
 from preprocessing.dataset_loader import prepare_global_test_generator, CLASS_NAMES, IMAGE_SIZE
 
-GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
-IMAGE_ROOT = "dataset/raw/ISIC_2019_Training_Input"
-CHECKPOINT_DIR = "models/checkpoints"
-OUTPUT_JSON = "models/checkpoints/ensemble_metrics.json"
+GLOBAL_TEST_CSV   = "dataset/partitions/global_test.csv"
+IMAGE_ROOT        = "dataset/raw/ISIC_2019_Training_Input"
+CHECKPOINT_DIR    = "models/checkpoints"
+OUTPUT_JSON       = "models/checkpoints/ensemble_metrics.json"
 
 
-import zipfile
+# ─────────────────────────────────────────────
+#  CUSTOM OBJECT MAP
+# ─────────────────────────────────────────────
+CUSTOM_OBJECTS = {
+    "GeMPooling2D": GeMPooling2D,
+    "CBAM": CBAM,
+    "CategoricalFocalLoss": CategoricalFocalLoss,
+}
+
 
 def load_trained_model(model_name: str):
-    """Builds model structure and loads best saved weights or full model."""
-    model_tag = str(model_name).lower()
-    ckpt_path = os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.keras")
-    
-    if not os.path.exists(ckpt_path):
-        ckpt_path = os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.h5")
-        if not os.path.exists(ckpt_path):
-            raise FileNotFoundError(f"Missing checkpoint for {model_name}: {ckpt_path}")
+    """
+    Tries to load a trained model in this priority order:
+      1. centralized_full_{name}/   — full SavedModel directory (best, no issues)
+      2. centralized_best_{name}.keras — full model saved by ModelCheckpoint
+      3. centralized_best_{name}.h5    — full model in HDF5 format
+    """
+    model_tag = model_name.lower()
 
-    print(f"Loading checkpoint for {model_name} from: {ckpt_path}")
-    custom_objs = {
-        "GeMPooling2D": GeMPooling2D,
-        "CBAM": CBAM,
-        "CategoricalFocalLoss": CategoricalFocalLoss,
-    }
-    
-    # 1. Attempt full model load
-    try:
-        model = tf.keras.models.load_model(ckpt_path, custom_objects=custom_objs, compile=False)
-        return model
-    except Exception:
-        pass
+    candidates = [
+        os.path.join(CHECKPOINT_DIR, f"centralized_full_{model_tag}"),       # full SavedModel dir
+        os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.keras"),  # full .keras
+        os.path.join(CHECKPOINT_DIR, f"centralized_best_{model_tag}.h5"),     # full .h5
+    ]
 
-    # 2. Build model architecture
-    model = build_model(
-        model_name=model_name,
-        input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3),
-        num_classes=len(CLASS_NAMES),
-        pooling_mode="gem_gap",
-    )
-    
-    # 3. Handle .keras Zip Archive Format
-    if zipfile.is_zipfile(ckpt_path):
-        tmp_dir = os.path.join(CHECKPOINT_DIR, f"tmp_{model_tag}")
-        os.makedirs(tmp_dir, exist_ok=True)
-        with zipfile.ZipFile(ckpt_path, "r") as zip_ref:
-            zip_ref.extractall(tmp_dir)
-            
-        h5_weights = None
-        for root, _, files in os.walk(tmp_dir):
-            for f in files:
-                if f.endswith(".h5"):
-                    h5_weights = os.path.join(root, f)
-                    break
-        if h5_weights:
-            model.load_weights(h5_weights, by_name=True, skip_mismatch=True)
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        print(f"  Trying: {path}")
+        try:
+            model = tf.keras.models.load_model(path, custom_objects=CUSTOM_OBJECTS, compile=False)
+            print(f"  ✅ Loaded full model for {model_name.upper()} from: {path}")
             return model
+        except Exception as e:
+            print(f"  ⚠️  load_model failed: {type(e).__name__}: {e}")
 
-    # 4. Standard HDF5 load
-    model.load_weights(ckpt_path, by_name=True, skip_mismatch=True)
-    return model
+    raise RuntimeError(
+        f"\n❌ CANNOT LOAD MODEL: {model_name}\n"
+        f"   None of the full-model checkpoints could be loaded.\n"
+        f"   Root cause: the existing checkpoints were saved with save_weights_only=True\n"
+        f"   (weights-only files, not full models). Keras 2.10 cannot reload these\n"
+        f"   for custom-layer models without triggering an 'axes don't match array' error.\n\n"
+        f"   ✅ FIX (already applied to train_local.py):\n"
+        f"      Retrain each model once — the new code saves the full model:\n\n"
+        f"      python train_local.py --model_name densenet201   --epochs 10 --finetune_epochs 25\n"
+        f"      python train_local.py --model_name efficientnetb0 --epochs 10 --finetune_epochs 25\n\n"
+        f"   After retraining, run this script again. Ensemble will work."
+    )
 
+
+# ─────────────────────────────────────────────
+#  TTA RUNNER
+# ─────────────────────────────────────────────
+
+def run_tta_on_generator(model, gen):
+    """Runs 5-view TTA across all batches. Returns (y_true_onehot, y_probs)."""
+    gen.reset()
+    n_batches = len(gen)
+    y_prob_list, y_true_list = [], []
+
+    for i in range(n_batches):
+        x_batch, y_batch = gen[i]
+        probs = predict_batch_with_tta(model, x_batch)
+        y_prob_list.append(probs)
+        y_true_list.append(y_batch)
+        print(f"\r  Evaluating TTA batch {i + 1}/{n_batches}", end="", flush=True)
+
+    print()
+    return np.concatenate(y_true_list, axis=0), np.concatenate(y_prob_list, axis=0)
+
+
+# ─────────────────────────────────────────────
+#  MAIN ENSEMBLE EVALUATION
+# ─────────────────────────────────────────────
 
 def evaluate_ensemble(model1_name="densenet201", model2_name="efficientnetb0"):
     print("=" * 60)
     print(f" 🤖 DUAL-MODEL ENSEMBLE EVALUATION ({model1_name.upper()} + {model2_name.upper()})")
     print("=" * 60)
 
+    # [1/4] Test generators
     print("\n[1/4] Preparing test generators...")
-    test_gen1 = prepare_global_test_generator(
-        GLOBAL_TEST_CSV, IMAGE_ROOT, model_name=model1_name
+    test_gen_m1 = prepare_global_test_generator(
+        csv_path=GLOBAL_TEST_CSV,
+        image_root=IMAGE_ROOT,
+        batch_size=16,
+        model_name=model1_name,
+        enable_multimodal=True,
     )
-    test_gen2 = prepare_global_test_generator(
-        GLOBAL_TEST_CSV, IMAGE_ROOT, model_name=model2_name
+    test_gen_m2 = prepare_global_test_generator(
+        csv_path=GLOBAL_TEST_CSV,
+        image_root=IMAGE_ROOT,
+        batch_size=16,
+        model_name=model2_name,
+        enable_multimodal=True,
     )
 
+    # [2/4] Load models
     print("\n[2/4] Building models and loading weights...")
     m1 = load_trained_model(model1_name)
     m2 = load_trained_model(model2_name)
 
-    print("\n[3/4] Running TTA Evaluation on Unseen Test Set (5 Spatial Views per model)...")
-    y_prob1 = []
-    y_prob2 = []
-    y_true_all = []
+    # [3/4] TTA Inference
+    print("\n[3/4] Running TTA Evaluation on Unseen Test Set (5 views per model)...")
+    y_true_oh, probs_m1 = run_tta_on_generator(m1, test_gen_m1)
+    _,         probs_m2 = run_tta_on_generator(m2, test_gen_m2)
+    print("✅ TTA Inference Complete!")
 
-    n_steps = len(test_gen1)
-    for i in range(n_steps):
-        x1, y_batch = test_gen1[i]
-        x2, _ = test_gen2[i]
-
-        p1 = predict_batch_with_tta(m1, x1)
-        p2 = predict_batch_with_tta(m2, x2)
-
-        y_prob1.append(p1)
-        y_prob2.append(p2)
-        y_true_all.append(y_batch)
-
-        print(f"\r  Evaluating TTA batch {i+1}/{n_steps}", end="", flush=True)
-
-    print("\n✅ TTA Inference Complete!")
-
-    y_prob1 = np.concatenate(y_prob1, axis=0)
-    y_prob2 = np.concatenate(y_prob2, axis=0)
-    y_true_oh = np.concatenate(y_true_all, axis=0)
-
-    # 5. Dual-Model Ensemble Softmax Averaging
+    # [4/4] Ensemble
     print("\n[4/4] Computing Dual-Model Ensemble Consensus Probabilities...")
-    y_prob_ensemble = (y_prob1 + y_prob2) / 2.0
-
+    ensemble_probs = 0.5 * probs_m1 + 0.5 * probs_m2
     y_true = np.argmax(y_true_oh, axis=1)
-    y_pred = np.argmax(y_prob_ensemble, axis=1)
+    y_pred = np.argmax(ensemble_probs, axis=1)
 
-    # 6. Compute Full Metrics
-    acc = accuracy_score(y_true, y_pred)
-    bal_acc = balanced_accuracy_score(y_true, y_pred)
-    macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
-    macro_prec = precision_score(y_true, y_pred, average="macro", zero_division=0)
-    macro_rec = recall_score(y_true, y_pred, average="macro", zero_division=0)
-    mcc = matthews_corrcoef(y_true, y_pred)
-    kappa = cohen_kappa_score(y_true, y_pred)
-    pr_auc = compute_pr_auc_macro(y_true_oh, y_prob_ensemble)
+    acc       = float(accuracy_score(y_true, y_pred))
+    bal_acc   = float(balanced_accuracy_score(y_true, y_pred))
+    macro_f1  = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
+    macro_prec= float(precision_score(y_true, y_pred, average="macro", zero_division=0))
+    macro_rec = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
+    kappa     = float(cohen_kappa_score(y_true, y_pred))
+    mcc       = float(matthews_corrcoef(y_true, y_pred))
+    pr_auc    = float(compute_pr_auc_macro(y_true_oh, ensemble_probs))
 
     try:
-        roc_auc = roc_auc_score(y_true_oh, y_prob_ensemble, multi_class="ovr", average="macro")
-    except ValueError:
+        roc_auc = float(roc_auc_score(y_true_oh, ensemble_probs, average="macro", multi_class="ovr"))
+    except Exception:
         roc_auc = 0.0
 
-    cm = confusion_matrix(y_true, y_pred)
-    report = classification_report(y_true, y_pred, target_names=CLASS_NAMES, zero_division=0)
+    report_str = classification_report(y_true, y_pred, target_names=CLASS_NAMES, zero_division=0, digits=4)
 
     print("\n" + "=" * 50)
     print(" 🏆 FINAL DUAL-MODEL ENSEMBLE METRICS (TTA=ON)")
@@ -180,37 +186,37 @@ def evaluate_ensemble(model1_name="densenet201", model2_name="efficientnetb0"):
     print(f"  Cohen's Kappa    : {kappa:.4f}")
     print("=" * 50)
     print("\nDetailed Per-Class Classification Report:\n")
-    print(report)
+    print(report_str)
 
-    # 7. Save Metrics JSON
-    results = {
-        "model_type": f"Dual-Model Ensemble ({model1_name.upper()} + {model2_name.upper()})",
-        "tta_enabled": True,
-        "test_samples": len(y_true),
-        "accuracy": float(acc),
-        "balanced_accuracy": float(bal_acc),
-        "roc_auc_ovr": float(roc_auc),
-        "pr_auc_macro": float(pr_auc),
-        "macro_f1": float(macro_f1),
-        "macro_precision": float(macro_prec),
-        "macro_recall": float(macro_rec),
-        "mcc": float(mcc),
-        "cohen_kappa": float(kappa),
-        "confusion_matrix": cm.tolist(),
-        "report": report,
+    metrics_payload = {
+        "model1":              model1_name,
+        "model2":              model2_name,
+        "top1_accuracy":       acc,
+        "balanced_accuracy":   bal_acc,
+        "macro_f1":            macro_f1,
+        "macro_precision":     macro_prec,
+        "macro_recall":        macro_rec,
+        "cohen_kappa":         kappa,
+        "mcc":                 mcc,
+        "roc_auc_ovr":         roc_auc,
+        "pr_auc_macro":        pr_auc,
+        "classification_report": report_str,
     }
 
-    os.makedirs(os.path.dirname(OUTPUT_JSON), exist_ok=True)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     with open(OUTPUT_JSON, "w") as f:
-        json.dump(results, f, indent=4)
+        json.dump(metrics_payload, f, indent=2)
 
     print(f"\n✅ Saved Ensemble Metrics to: {OUTPUT_JSON}")
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Dual-Model Ensemble Evaluation")
-    parser.add_argument("--model1", type=str, default="densenet201", help="First model backbone")
-    parser.add_argument("--model2", type=str, default="efficientnetb0", help="Second model backbone")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model1", type=str, default="densenet201")
+    parser.add_argument("--model2", type=str, default="efficientnetb0")
     args = parser.parse_args()
-
     evaluate_ensemble(args.model1, args.model2)
+
+
+if __name__ == "__main__":
+    main()

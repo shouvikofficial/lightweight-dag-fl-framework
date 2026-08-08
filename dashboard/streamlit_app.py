@@ -977,7 +977,7 @@ elif page == "🔍 Predict":
     st.markdown("# 🔍 Skin Lesion Prediction")
     st.markdown("---")
 
-    CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "AK", "VASC", "DF", "SCC"]
+    CLASS_NAMES = ["MEL", "NV", "BKL", "BCC", "AK"]
     CLASS_LABELS = {
         "MEL":  "Melanoma",
         "NV":   "Melanocytic Nevi",

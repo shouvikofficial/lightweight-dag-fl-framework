@@ -8,7 +8,7 @@ from collections import defaultdict
 # CONFIG
 # ============================================
 
-CSV_PATH = "dataset/raw/ISIC_2019_Training_GroundTruth.csv"
+CSV_PATH = "dataset/ISIC_2019_Training_GroundTruth.csv"
 
 OUTPUT_DIR = "dataset/partitions"
 
@@ -34,6 +34,7 @@ CLASS_NAMES = [
     "NV",
     "BKL",
     "BCC",
+    "AK",
 ]
 
 
@@ -102,7 +103,7 @@ def create_partitions(
 
         for class_name in CLASS_NAMES:
 
-            if row[class_name] == 1:
+            if row.get(class_name, 0) == 1.0:
 
                 label = class_name
                 break
@@ -224,7 +225,7 @@ def create_partitions(
 
 def create_demographic_partitions(
     csv_path=CSV_PATH,
-    meta_path="dataset/raw/ISIC_2019_Training_Metadata.csv",
+    meta_path="dataset/ISIC_2019_Training_Metadata.csv",
     output_dir=OUTPUT_DIR,
     global_test_ratio=GLOBAL_TEST_RATIO,
     seed=42,
@@ -247,7 +248,7 @@ def create_demographic_partitions(
     for _, row in df_gt.iterrows():
         lbl = "NV"
         for c in CLASS_NAMES:
-            if c in row and row[c] == 1:
+            if c in row and row[c] == 1.0:
                 lbl = c
                 break
         labels.append(lbl)

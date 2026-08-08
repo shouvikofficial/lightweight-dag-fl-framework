@@ -16,15 +16,16 @@ Available client IDs: client_1, client_2, client_3, client_4
 
 import os
 import sys
+import json
 import argparse
 from datetime import datetime
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
+# pyrefly: ignore [missing-import]
 import flwr as fl
 
 from federated.client import FLClient
 from preprocessing.dataset_loader import (
-    prepare_client_data,
     prepare_client_generators,
 )
 from blockchain.dag.dag_structure import DAG
@@ -39,6 +40,7 @@ SERVER_ADDRESS = "localhost:8080"
 
 DATASET_DIR    = "dataset/partitions"
 IMAGE_ROOT     = "dataset/raw/ISIC_2019_Training_Input"
+BLOCKCHAIN_DIR = "blockchain"
 
 VALID_CLIENTS  = ["client_1", "client_2", "client_3", "client_4"]
 LOG_DIR = "logs"
@@ -86,14 +88,20 @@ def parse_args():
         "--attack_type",
         type=str,
         default="none",
-        choices=["none", "label_flip", "weight_noise"],
-        help="Poisoning attack simulation: none (default), label_flip, or weight_noise"
+        choices=["none", "label_flip", "weight_noise", "sign_flip", "free_rider"],
+        help="Poisoning attack simulation: none (default), label_flip, weight_noise, sign_flip, or free_rider"
     )
     parser.add_argument(
         "--attack_factor",
         type=float,
         default=1.0,
         help="Attack intensity factor (default: 1.0)"
+    )
+    parser.add_argument(
+        "--mu",
+        type=float,
+        default=0.01,
+        help="FedProx proximal regularization coefficient (default: 0.01)"
     )
     return parser.parse_args()
 
@@ -102,7 +110,7 @@ def parse_args():
 # START CLIENT
 # ============================================
 
-def start_client(client_id, server_address, model_name="densenet121", attack_type="none", attack_factor=1.0):
+def start_client(client_id, server_address, model_name="densenet121", attack_type="none", attack_factor=1.0, mu=0.01):
 
     csv_path = os.path.join(DATASET_DIR, f"{client_id}.csv")
 
@@ -183,6 +191,7 @@ def start_client(client_id, server_address, model_name="densenet121", attack_typ
         model_name=model_name,
         attack_type=attack_type,
         attack_factor=attack_factor,
+        mu=mu,
     )
 
     _log(client_id, f"Connecting to server at {server_address}...")
@@ -196,10 +205,16 @@ def start_client(client_id, server_address, model_name="densenet121", attack_typ
     # SAVE CLIENT DAG LEDGER
     # ========================================
 
-    ledger_path = f"blockchain/ledger_{client_id}.json"
-    dag.save_ledger(filepath=ledger_path)
-    _log(client_id, f"DAG ledger saved -> {ledger_path}")
+    client_ledger_path = os.path.join(BLOCKCHAIN_DIR, f"ledger_{client_id}.json")
+    os.makedirs(BLOCKCHAIN_DIR, exist_ok=True)
+    with open(client_ledger_path, "w", encoding="utf-8") as f:
+        json.dump(dag.get_all_transactions(), f, indent=4)
+    _log(client_id, f"DAG ledger saved -> {client_ledger_path}")
 
+
+# ============================================
+# MAIN ENTRY
+# ============================================
 
 if __name__ == "__main__":
     args = parse_args()
@@ -209,4 +224,5 @@ if __name__ == "__main__":
         model_name=args.model_name,
         attack_type=args.attack_type,
         attack_factor=args.attack_factor,
+        mu=args.mu,
     )

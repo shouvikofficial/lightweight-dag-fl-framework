@@ -19,12 +19,15 @@ import json
 from typing import Tuple
 import numpy as np
 
+# pyrefly: ignore [missing-import]
+# type: ignore
 import flwr as fl
 from blockchain.shared_ledger import add_transaction
 from federated.aggregator import Aggregator
 from federated.trust_aggregator import TrustAwareAggregator
 from federated.fedprox import FedProx
 from models.model import build_model
+from models.evaluate import predict_batch_with_tta
 from preprocessing.dataset_loader import prepare_global_test_generator
 from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score, confusion_matrix
 
@@ -71,9 +74,9 @@ def _print_round_summary(
     prev_metrics,
     train_time_sec,
 ):
-    accuracy = avg_metrics.get("accuracy", 0.0)
-    precision = avg_metrics.get("precision", 0.0)
-    recall = avg_metrics.get("recall", 0.0)
+    accuracy = avg_metrics.get("accuracy", avg_metrics.get("acc_manual", 0.0))
+    precision = avg_metrics.get("precision_macro", avg_metrics.get("precision", 0.0))
+    recall = avg_metrics.get("recall_macro", avg_metrics.get("recall", 0.0))
     f1_macro = avg_metrics.get("f1_macro", 0.0)
     roc_auc = avg_metrics.get("roc_auc_ovr", 0.0)
     cm = avg_metrics.get("confusion_matrix")
@@ -128,7 +131,7 @@ def _evaluate_global_test(weights, model_name="densenet121", use_tta=True) -> di
     )
 
     num_classes = len(test_gen.class_indices)
-    model = build_model(model_name=model_name, num_classes=num_classes)
+    model = build_model(model_name=model_name, num_classes=num_classes, input_shape=(224, 224, 3))
     model.set_weights(weights)
 
     eval_results = model.evaluate(test_gen, verbose=0)
@@ -186,7 +189,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         super().__init__(*args, **kwargs)
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
-        self.trust_aggregator = TrustAwareAggregator(alpha=0.7, rejection_threshold=0.25)
+        self.trust_aggregator = TrustAwareAggregator(accept_threshold=0.80, reject_threshold=0.50)
         self.round_start_time = {}
         self.prev_metrics = None
         self.last_round_clients = []
@@ -444,7 +447,7 @@ def start_server(args):
     fraction_fit = args.fraction_fit if args.fraction_fit is not None else 1.0
 
     strategy = FedProxStrategy(
-        mu=0.0,
+        mu=0.01,
         total_rounds=args.rounds,
         model_name=args.model_name,
         fraction_fit=fraction_fit,

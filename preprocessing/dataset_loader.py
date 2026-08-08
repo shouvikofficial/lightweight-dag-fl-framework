@@ -13,8 +13,14 @@ import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 
+
+# pyrefly: ignore [missing-import]
 from tensorflow.keras.utils import to_categorical
+
+
+# pyrefly: ignore [missing-import]
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
 from models.model import get_preprocess_input
 
 
@@ -22,14 +28,15 @@ from models.model import get_preprocess_input
 # CONFIGURATION
 # ============================================
 
-IMAGE_SIZE = 256
-BATCH_SIZE = 16
+IMAGE_SIZE = 224
+BATCH_SIZE = 32
 
 CLASS_NAMES = [
     "MEL",
     "NV",
     "BKL",
     "BCC",
+    "AK",
 ]
 
 
@@ -136,30 +143,52 @@ class DualInputGenerator(tf.keras.utils.Sequence):
     """
     Keras Sequence wrapper that yields Dual Inputs:
     ((image_batch, metadata_batch), label_batch)
+    Supports MixUp augmentation internally (no wrapper needed).
     """
-    def __init__(self, base_gen, meta_lookup):
+    def __init__(self, base_gen, meta_lookup, use_mixup=False, mixup_alpha=0.2, **kwargs):
+        super().__init__(**kwargs)
         self.base_gen = base_gen
         self.meta_lookup = meta_lookup
         self.filenames = [os.path.splitext(os.path.basename(fn))[0] for fn in base_gen.filenames]
         self.class_indices = getattr(base_gen, "class_indices", {})
         self.n = getattr(base_gen, "n", len(self.filenames))
         self.batch_size = getattr(base_gen, "batch_size", BATCH_SIZE)
+        self.use_mixup = use_mixup
+        self.mixup_alpha = mixup_alpha
 
     def __len__(self):
         return len(self.base_gen)
 
-    def __getitem__(self, idx):
+    def _get_batch(self, idx):
+        """Return (img_batch, meta_batch, label_batch) for a given index."""
         x_img, y = self.base_gen[idx]
         batch_size = len(x_img)
         start_i = idx * self.batch_size
         batch_fns = self.filenames[start_i : start_i + batch_size]
+        meta_batch = np.array(
+            [self.meta_lookup.get(fn, np.array([0.0, 2.0, 0.0], dtype=np.float32)) for fn in batch_fns],
+            dtype=np.float32
+        )
+        return x_img, meta_batch, y
 
-        meta_batch = []
-        for fn in batch_fns:
-            vec = self.meta_lookup.get(fn, np.array([0.0, 2.0, 0.0], dtype=np.float32))
-            meta_batch.append(vec)
+    def __getitem__(self, idx):
+        x_img, meta_batch, y = self._get_batch(idx)
 
-        meta_batch = np.array(meta_batch, dtype=np.float32)
+        if self.use_mixup:
+            # Pick a random second batch to mix with
+            idx2 = np.random.randint(0, len(self.base_gen))
+            x_img2, meta_batch2, y2 = self._get_batch(idx2)
+
+            # Align batch sizes
+            min_bs = min(len(x_img), len(x_img2))
+            x_img, meta_batch, y = x_img[:min_bs], meta_batch[:min_bs], y[:min_bs]
+            x_img2, meta_batch2, y2 = x_img2[:min_bs], meta_batch2[:min_bs], y2[:min_bs]
+
+            lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
+            x_img     = lam * x_img     + (1 - lam) * x_img2
+            meta_batch = lam * meta_batch + (1 - lam) * meta_batch2
+            y          = lam * y          + (1 - lam) * y2
+
         return (x_img, meta_batch), y
 
     def on_epoch_end(self):

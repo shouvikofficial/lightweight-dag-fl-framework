@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 import flwr as fl
 import tensorflow as tf
 import numpy as np
@@ -5,7 +6,7 @@ import json
 from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score, confusion_matrix
 from datetime import datetime
 
-from models.model import build_model, unfreeze_model
+from models.model import build_model, unfreeze_model, CategoricalFocalLoss
 from preprocessing.balancing import get_class_weights
 from blockchain.transaction import Transaction
 from blockchain.hashing import generate_hash
@@ -37,7 +38,11 @@ class FLClient(fl.client.NumPyClient):
         attack_factor=1.0,
     ):
 
-        self.model = build_model(model_name=model_name)
+        self.model = build_model(
+            model_name=model_name,
+            input_shape=(224, 224, 3),
+            num_classes=5,
+        )
 
         self.x_train = x_train
         self.y_train = y_train
@@ -60,6 +65,7 @@ class FLClient(fl.client.NumPyClient):
         self.fine_tune_round = fine_tune_round
         self.fine_tune_at = fine_tune_at
         self.fine_tune_lr = fine_tune_lr
+        self.mu = float(mu)
         self.attack_type = attack_type
         self.attack_factor = attack_factor
 
@@ -153,18 +159,31 @@ class FLClient(fl.client.NumPyClient):
         # Load global model weights
         self.model.set_weights(parameters)
 
-        round_number = int(config.get("round", 0))
-        if not self.fine_tuned and round_number >= self.fine_tune_round:
-            self._log(
-                f"Starting fine-tuning at round {round_number} with lr={self.fine_tune_lr}"
+        # ── FedProx: Inject true proximal regularization loss into optimizer ──
+        if self.mu > 0.0:
+            g_weights = [tf.constant(w, dtype=tf.float32) for w in parameters]
+            model_ref = self.model
+            mu_val = self.mu
+
+            class FedProxLoss(tf.keras.losses.Loss):
+                def __init__(self, **kwargs):
+                    super().__init__(**kwargs)
+                    self.focal_loss = CategoricalFocalLoss(alpha=0.25, gamma=2.0, label_smoothing=0.02, num_classes=5)
+
+                def call(self, y_true, y_pred):
+                    base_loss = self.focal_loss(y_true, y_pred)
+                    prox_loss = 0.0
+                    for w, gw in zip(model_ref.trainable_weights, g_weights):
+                        if w.shape == gw.shape:
+                            prox_loss += tf.reduce_sum(tf.square(w - gw))
+                    return base_loss + (0.5 * mu_val * prox_loss)
+
+            self.model.compile(
+                optimizer=self.model.optimizer,
+                loss=FedProxLoss(),
+                metrics=["accuracy"],
             )
-            self.model = unfreeze_model(
-                self.model,
-                fine_tune_at=self.fine_tune_at,
-                learning_rate=self.fine_tune_lr,
-                keep_batch_norm_frozen=True,
-            )
-            self.fine_tuned = True
+            self._log(f"✅ FedProx proximal loss active (mu={self.mu})")
 
         # Train locally with validation data & progress bar
         if self.y_train is None:
@@ -191,7 +210,7 @@ class FLClient(fl.client.NumPyClient):
 
             self.model.fit(
                 self.x_train,
-                epochs=4,
+                epochs=6,
                 steps_per_epoch=self.train_steps,
                 validation_data=self.x_test,
                 validation_steps=self.val_steps,
@@ -215,7 +234,7 @@ class FLClient(fl.client.NumPyClient):
             self.model.fit(
                 self.x_train,
                 self.y_train,
-                epochs=4,
+                epochs=6,
                 batch_size=32,
                 validation_data=(self.x_test, self.y_test),
                 class_weight=class_weights,
@@ -243,6 +262,16 @@ class FLClient(fl.client.NumPyClient):
                 noise = np.random.normal(0, std * 0.5 * self.attack_factor, size=w.shape)
                 poisoned_weights.append(w + noise)
             updated_weights = poisoned_weights
+        elif self.attack_type == "sign_flip":
+            self._log(f"⚠️ [ATTACK] Executing Sign-Flipping Gradient Inversion (factor={self.attack_factor})")
+            poisoned_weights = []
+            for w, gw in zip(updated_weights, parameters):
+                delta = w - gw
+                poisoned_weights.append(gw - (self.attack_factor * delta))
+            updated_weights = poisoned_weights
+        elif self.attack_type == "free_rider":
+            self._log("⚠️ [ATTACK] Executing Free-Rider Attack (zero computation, returning stale global weights)")
+            updated_weights = [np.copy(p) for p in parameters]
 
         # Evaluate local accuracy
         if self.y_test is None:
