@@ -192,9 +192,9 @@ class DualInputGenerator(tf.keras.utils.Sequence):
             if np.random.rand() > 0.5:
                 img_np = np.flipud(img_np)
 
-            # 3. Dynamic Photometric / Brightness Perturbation
-            alpha = np.random.uniform(0.90, 1.10)
-            beta = np.random.uniform(-10.0, 10.0)
+            # 3. Dynamic Photometric / Mild Brightness Perturbation (Clinically Realistic)
+            alpha = np.random.uniform(0.95, 1.05)
+            beta = np.random.uniform(-5.0, 5.0)
             img_np = np.clip(img_np * alpha + beta, 0.0, 255.0)
 
         return img_np
