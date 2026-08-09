@@ -134,9 +134,9 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="densenet121",
+        default="densenet201",
         choices=["densenet121", "densenet169", "densenet201", "resnet50v2", "efficientnetb0"],
-        help="Backbone architecture to use (default: densenet121)"
+        help="Backbone architecture to use (default: densenet201)"
     )
     parser.add_argument(
         "--epochs",
@@ -271,7 +271,7 @@ def build_train_generator(df, batch_size, seed, model_name="densenet121", enable
     )
     meta_lookup = load_and_preprocess_metadata()
     if enable_multimodal and meta_lookup:
-        gen = DualInputGenerator(gen, meta_lookup, use_mixup=True, mixup_alpha=0.2)
+        gen = DualInputGenerator(gen, meta_lookup, is_training=True, use_mixup=True, mixup_alpha=0.2)
     return gen
 
 

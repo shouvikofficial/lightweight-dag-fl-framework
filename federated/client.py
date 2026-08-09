@@ -152,6 +152,8 @@ class FLClient(fl.client.NumPyClient):
     # =========================
 
     def fit(self, parameters, config):
+        import gc
+        gc.collect()
 
         self._log("Starting local training")
         self._log("Received global model from server")
@@ -367,6 +369,8 @@ class FLClient(fl.client.NumPyClient):
     # =========================
 
     def evaluate(self, parameters, config):
+        import gc
+        gc.collect()
 
         self._log("Starting evaluation")
 

@@ -143,17 +143,18 @@ class DualInputGenerator(tf.keras.utils.Sequence):
     """
     Keras Sequence wrapper that yields Dual Inputs:
     ((image_batch, metadata_batch), label_batch)
-    Supports MixUp augmentation internally (no wrapper needed).
+    Supports in-place Class-Specific Augmentation (training only) and MixUp.
     """
-    def __init__(self, base_gen, meta_lookup, use_mixup=False, mixup_alpha=0.2, **kwargs):
+    def __init__(self, base_gen, meta_lookup, is_training=False, use_mixup=False, mixup_alpha=0.2, **kwargs):
         super().__init__(**kwargs)
         self.base_gen = base_gen
         self.meta_lookup = meta_lookup
+        self.is_training = is_training
         self.filenames = [os.path.splitext(os.path.basename(fn))[0] for fn in base_gen.filenames]
         self.class_indices = getattr(base_gen, "class_indices", {})
         self.n = getattr(base_gen, "n", len(self.filenames))
         self.batch_size = getattr(base_gen, "batch_size", BATCH_SIZE)
-        self.use_mixup = use_mixup
+        self.use_mixup = use_mixup and is_training
         self.mixup_alpha = mixup_alpha
 
     def __len__(self):
@@ -171,58 +172,44 @@ class DualInputGenerator(tf.keras.utils.Sequence):
         )
         return x_img, meta_batch, y
 
-    def _apply_class_specific_aug(self, img_np: np.ndarray, label_vec: np.ndarray) -> np.ndarray:
-        """
-        Applies strong class-specific dynamic augmentation for minority cancers (MEL, AK, BCC, BKL)
-        while preserving standard natural augmentation for majority benign moles (NV).
-        """
+    def _apply_class_specific_aug_inplace(self, img_np: np.ndarray, label_vec: np.ndarray):
+        """Applies in-place class-specific spatial and contrast augmentation for minority cancers."""
         cls_idx = int(np.argmax(label_vec))
-        # 0: MEL, 1: NV, 2: BKL, 3: BCC, 4: AK
-        is_minority_cancer = (cls_idx in [0, 2, 3, 4])
-
-        if is_minority_cancer:
+        if cls_idx in [0, 2, 3, 4]:
             # 1. Multi-angle Orthogonal Rotation (90, 180, 270 deg)
             k = np.random.choice([0, 1, 2, 3])
             if k > 0:
-                img_np = np.rot90(img_np, k=k)
+                img_np[...] = np.rot90(img_np, k=k, axes=(0, 1))
 
             # 2. Random Flips
             if np.random.rand() > 0.5:
-                img_np = np.fliplr(img_np)
+                img_np[...] = np.fliplr(img_np)
             if np.random.rand() > 0.5:
-                img_np = np.flipud(img_np)
+                img_np[...] = np.flipud(img_np)
 
-            # 3. Dynamic Photometric / Mild Brightness Perturbation (Clinically Realistic)
+            # 3. Dynamic Contrast Perturbation (Preserving ImageNet Normalization)
             alpha = np.random.uniform(0.95, 1.05)
-            beta = np.random.uniform(-5.0, 5.0)
-            img_np = np.clip(img_np * alpha + beta, 0.0, 255.0)
-
-        return img_np
+            img_np[...] = img_np * alpha
 
     def __getitem__(self, idx):
         x_img, meta_batch, y = self._get_batch(idx)
 
-        # Apply class-specific dynamic augmentation to each image in batch
-        augmented_imgs = []
-        for i in range(len(x_img)):
-            aug_img = self._apply_class_specific_aug(x_img[i].copy(), y[i])
-            augmented_imgs.append(aug_img)
-        x_img = np.array(augmented_imgs, dtype=np.float32)
+        # In-place augmentation strictly for training only (Zero memory allocation)
+        if self.is_training:
+            for i in range(len(x_img)):
+                self._apply_class_specific_aug_inplace(x_img[i], y[i])
 
-        if self.use_mixup:
-            # Pick a random second batch to mix with
-            idx2 = np.random.randint(0, len(self.base_gen))
-            x_img2, meta_batch2, y2 = self._get_batch(idx2)
+            if self.use_mixup:
+                idx2 = np.random.randint(0, len(self.base_gen))
+                x_img2, meta_batch2, y2 = self._get_batch(idx2)
+                min_bs = min(len(x_img), len(x_img2))
+                x_img, meta_batch, y = x_img[:min_bs], meta_batch[:min_bs], y[:min_bs]
+                x_img2, meta_batch2, y2 = x_img2[:min_bs], meta_batch2[:min_bs], y2[:min_bs]
 
-            # Align batch sizes
-            min_bs = min(len(x_img), len(x_img2))
-            x_img, meta_batch, y = x_img[:min_bs], meta_batch[:min_bs], y[:min_bs]
-            x_img2, meta_batch2, y2 = x_img2[:min_bs], meta_batch2[:min_bs], y2[:min_bs]
-
-            lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-            x_img      = lam * x_img      + (1 - lam) * x_img2
-            meta_batch = lam * meta_batch + (1 - lam) * meta_batch2
-            y          = lam * y          + (1 - lam) * y2
+                lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
+                x_img      = lam * x_img      + (1 - lam) * x_img2
+                meta_batch = lam * meta_batch + (1 - lam) * meta_batch2
+                y          = lam * y          + (1 - lam) * y2
 
         return (x_img, meta_batch), y
 
@@ -336,8 +323,8 @@ def prepare_client_generators(
 
     meta_lookup = load_and_preprocess_metadata()
     if enable_multimodal and meta_lookup:
-        train_gen = DualInputGenerator(train_gen, meta_lookup)
-        val_gen = DualInputGenerator(val_gen, meta_lookup)
+        train_gen = DualInputGenerator(train_gen, meta_lookup, is_training=True)
+        val_gen = DualInputGenerator(val_gen, meta_lookup, is_training=False)
 
     return train_gen, val_gen, class_names
 
@@ -381,6 +368,6 @@ def prepare_global_test_generator(
 
     meta_lookup = load_and_preprocess_metadata()
     if enable_multimodal and meta_lookup:
-        test_gen = DualInputGenerator(test_gen, meta_lookup)
+        test_gen = DualInputGenerator(test_gen, meta_lookup, is_training=False)
 
     return test_gen
