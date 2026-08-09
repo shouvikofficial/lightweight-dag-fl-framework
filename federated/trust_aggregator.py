@@ -21,18 +21,22 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 
 
-def _flatten_weights(weights: List[np.ndarray]) -> np.ndarray:
-    """Flattens a list of weight matrices into a single 1D vector."""
-    return np.concatenate([w.flatten() for w in weights])
-
-
-def _cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
-    """Computes cosine similarity between two 1D vectors."""
-    norm1 = np.linalg.norm(vec1)
-    norm2 = np.linalg.norm(vec2)
+def _cosine_similarity_layerwise(weights1: List[np.ndarray], weights2: List[np.ndarray]) -> float:
+    """Computes exact cosine similarity across layer weight matrices with zero large-matrix allocation."""
+    dot_prod = 0.0
+    norm1_sq = 0.0
+    norm2_sq = 0.0
+    for w1, w2 in zip(weights1, weights2):
+        w1_f = w1.astype(np.float32)
+        w2_f = w2.astype(np.float32)
+        dot_prod += float(np.sum(w1_f * w2_f))
+        norm1_sq += float(np.sum(w1_f * w1_f))
+        norm2_sq += float(np.sum(w2_f * w2_f))
+    norm1 = np.sqrt(norm1_sq)
+    norm2 = np.sqrt(norm2_sq)
     if norm1 == 0.0 or norm2 == 0.0:
         return 0.0
-    return float(np.dot(vec1, vec2) / (norm1 * norm2))
+    return float(dot_prod / (norm1 * norm2))
 
 
 class TrustAwareAggregator:
@@ -73,17 +77,7 @@ class TrustAwareAggregator:
         prev_global_weights: Optional[List[np.ndarray]] = None,
     ) -> Dict[str, Dict[str, float]]:
         """
-        Computes 4-Factor Dynamic Trust Score for each client.
-
-        Returns:
-            Dict mapping client_id -> {
-                "similarity": float,
-                "val_accuracy": float,
-                "blockchain_valid": bool,
-                "prev_trust": float,
-                "trust_score": float,
-                "action": str ("ACCEPT", "PENALIZE", "REJECT")
-            }
+        Computes 4-Factor adaptive trust score for each client.
         """
         if not client_weights or not client_ids:
             return {}
@@ -92,23 +86,29 @@ class TrustAwareAggregator:
         client_accuracies = client_accuracies or {cid: 0.80 for cid in client_ids}
         blockchain_validations = blockchain_validations or {cid: True for cid in client_ids}
 
-        # Compute weight update delta ΔW = W_client - W_global
-        deltas = []
+        # Compute layer-wise weight update deltas ΔW = W_client - W_global
+        client_deltas = []
         for weights in client_weights:
             if prev_global_weights is not None:
                 delta = [w - g for w, g in zip(weights, prev_global_weights)]
             else:
                 delta = weights
-            deltas.append(_flatten_weights(delta))
+            client_deltas.append(delta)
 
-        # Reference vector: elementwise median across all client deltas
-        deltas_matrix = np.vstack(deltas)
-        median_delta = np.median(deltas_matrix, axis=0)
+        # Consensus reference delta computed layer-by-layer (Zero massive matrix RAM allocation)
+        num_layers = len(client_deltas[0])
+        ref_delta = []
+        for layer_idx in range(num_layers):
+            layer_sum = np.zeros_like(client_deltas[0][layer_idx], dtype=np.float32)
+            for c_delta in client_deltas:
+                layer_sum += c_delta[layer_idx]
+            layer_sum /= float(len(client_deltas))
+            ref_delta.append(layer_sum)
 
         results = {}
-        for cid, delta_vec in zip(client_ids, deltas):
-            # Factor 1: Model Similarity (Cosine mapped to [0, 1])
-            sim = _cosine_similarity(delta_vec, median_delta)
+        for cid, delta_layers in zip(client_ids, client_deltas):
+            # Factor 1: Model Similarity (Layer-wise Cosine mapped to [0, 1])
+            sim = _cosine_similarity_layerwise(delta_layers, ref_delta)
             scaled_sim = float(np.clip((sim + 1.0) / 2.0, 0.0, 1.0))
 
             # Factor 2: Validation Accuracy (normalized [0, 1])

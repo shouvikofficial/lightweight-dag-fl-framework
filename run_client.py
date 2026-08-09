@@ -80,9 +80,9 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="densenet121",
+        default="densenet201",
         choices=["densenet121", "densenet169", "densenet201", "resnet50v2", "efficientnetb0"],
-        help="Backbone architecture to use (default: densenet121)"
+        help="Backbone architecture to use (default: densenet201)"
     )
     parser.add_argument(
         "--attack_type",

@@ -4541,5 +4541,133 @@
         ],
         "validated": true,
         "signature": "c4a56933bcef967dda9086404fa3d90c2dddead909e705b7d77a0ba2ce472104"
+    },
+    {
+        "transaction_id": "e971480d6f3c5e7daa0075adae88fbfa648eb0855afd9608c03a03720a49e8d5",
+        "client_id": "client_3",
+        "round_number": 1,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.5373831775700935,
+        "f1_macro": 0.4963715793127558,
+        "roc_auc_ovr": 0.8329359124658182,
+        "timestamp": "2026-08-08T23:15:28",
+        "previous_hash": "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517",
+        "references": [
+            "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517"
+        ],
+        "validated": true,
+        "signature": "2e18571b1de540f06fc6f3e0bd2c8c98768581de879901d0f9b609e41a04b90a"
+    },
+    {
+        "transaction_id": "8bd6a480ce0e38df0e0d6c5f23e2e4259db93531d919040998c962efd8d9eb59",
+        "client_id": "client_2",
+        "round_number": 1,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.8585286984640259,
+        "f1_macro": 0.42040364810823955,
+        "roc_auc_ovr": 0.876912017747013,
+        "timestamp": "2026-08-09T00:11:28",
+        "previous_hash": "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517",
+        "references": [
+            "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517"
+        ],
+        "validated": true,
+        "signature": "dcefd0e5aecbd1c7e1cc060934858f440638f726ca47c80aed37856094f42742"
+    },
+    {
+        "transaction_id": "5778ab067015fff0dc65121c95abe84b8ec834475d148240b36acf51b6f23f7e",
+        "client_id": "client_1",
+        "round_number": 1,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.5679949399114484,
+        "f1_macro": 0.4989140363207495,
+        "roc_auc_ovr": 0.8333854470719142,
+        "timestamp": "2026-08-09T00:23:04",
+        "previous_hash": "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517",
+        "references": [
+            "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517"
+        ],
+        "validated": true,
+        "signature": "b8bdc466f258607ec338da61aafaac2ec4bbfeafbda0c6eb34cfbd71167cd7a3"
+    },
+    {
+        "transaction_id": "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960",
+        "client_id": "client_4",
+        "round_number": 1,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.7667173252279635,
+        "f1_macro": 0.547077899109112,
+        "roc_auc_ovr": 0.86577008117857,
+        "timestamp": "2026-08-09T00:13:39",
+        "previous_hash": "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517",
+        "references": [
+            "3789b91979f01d1133abf6b4f98ec4ba6f7e493dc4a62c3f97bc3876af792517"
+        ],
+        "validated": true,
+        "signature": "915495464697e02fa94c54c425a1762c54154d8b9fb1499eededcac11374b6d9"
+    },
+    {
+        "transaction_id": "e35c3fe457b60a4dfd38a268d150e079227441d36ee0a4892ec6be8d3cfa377a",
+        "client_id": "client_1",
+        "round_number": 2,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.5895003162555345,
+        "f1_macro": 0.5589227128268054,
+        "roc_auc_ovr": 0.8508721258034047,
+        "timestamp": "2026-08-09T02:01:27",
+        "previous_hash": "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960",
+        "references": [
+            "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960"
+        ],
+        "validated": true,
+        "signature": "03e3fa19bba30654d6e6fd95c5cc4b07a4a18afa8514e03724aa3599997ac4fa"
+    },
+    {
+        "transaction_id": "933d32235a95d7f9cd9c9a2b9582289caacbf0bf48f7a9cdb6af7af769533d45",
+        "client_id": "client_4",
+        "round_number": 2,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.7674772036474165,
+        "f1_macro": 0.6098007681016816,
+        "roc_auc_ovr": 0.8959967858237816,
+        "timestamp": "2026-08-09T01:53:27",
+        "previous_hash": "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960",
+        "references": [
+            "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960"
+        ],
+        "validated": true,
+        "signature": "5aaa67b69913b13f29e42b8e6e471afe96532ae2fbeccaad8a9bb4644cfd3f91"
+    },
+    {
+        "transaction_id": "cce725ea47fef143f9d19a9aa54591f1608f345dc107f455d2f02be5b1648c4a",
+        "client_id": "client_3",
+        "round_number": 2,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.572429906542056,
+        "f1_macro": 0.5324285146698329,
+        "roc_auc_ovr": 0.8586011236473041,
+        "timestamp": "2026-08-09T01:09:45",
+        "previous_hash": "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960",
+        "references": [
+            "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960"
+        ],
+        "validated": true,
+        "signature": "51a9b892cf35d5cb86a6be41206203b1b13bc96e3ea57a509941280f49033deb"
+    },
+    {
+        "transaction_id": "3d29cddc5fa6b506d7dc387ff7c5e645820c42284271b9d4cc2bac0f38f05791",
+        "client_id": "client_2",
+        "round_number": 2,
+        "model_hash": "f4c19da4c191f08e01617234bd27f3397771adad8ed9523fafa40c6044170588",
+        "accuracy": 0.8375101050929669,
+        "f1_macro": 0.4114281649676994,
+        "roc_auc_ovr": 0.8835834425041618,
+        "timestamp": "2026-08-09T01:53:18",
+        "previous_hash": "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960",
+        "references": [
+            "71446fa0476276899e28ab44ed91ec07034fafa8dee4246f1ce7cbc0551aa960"
+        ],
+        "validated": true,
+        "signature": "c107dfe75112bc45a7526face79fba53c724d59d1e9f2e4bb950f05a787dab67"
     }
 ]
