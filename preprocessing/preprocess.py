@@ -4,7 +4,9 @@ import numpy as np
 import pandas as pd
 
 from sklearn.preprocessing import LabelEncoder
+# pyrefly: ignore [missing-import]
 from tensorflow.keras.utils import to_categorical
+# pyrefly: ignore [missing-import]
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
 
