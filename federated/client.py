@@ -167,31 +167,24 @@ class FLClient(fl.client.NumPyClient):
             model_ref = self.model
             mu_val = self.mu
 
-            class FedProxLoss(tf.keras.losses.Loss):
-                def __init__(self, **kwargs):
-                    super().__init__(**kwargs)
-                    self.focal_loss = CategoricalFocalLoss(alpha=0.25, gamma=2.0, label_smoothing=0.02, num_classes=5)
-
-                def call(self, y_true, y_pred):
-                    base_loss = self.focal_loss(y_true, y_pred)
-                    prox_loss = 0.0
-                    for w, gw in zip(model_ref.trainable_weights, g_weights):
-                        if w.shape == gw.shape:
-                            prox_loss += tf.reduce_sum(tf.square(w - gw))
-                    return base_loss + (0.5 * mu_val * prox_loss)
+            def fedprox_loss_fn(y_true, y_pred):
+                focal = CategoricalFocalLoss(alpha=0.25, gamma=2.0, label_smoothing=0.02, num_classes=5)
+                base_loss = focal(y_true, y_pred)
+                prox_loss = 0.0
+                for w, gw in zip(model_ref.trainable_weights, g_weights):
+                    if w.shape == gw.shape:
+                        prox_loss += tf.reduce_sum(tf.square(w - gw))
+                return base_loss + (0.5 * mu_val * prox_loss)
 
             self.model.compile(
                 optimizer=self.model.optimizer,
-                loss=FedProxLoss(),
+                loss=fedprox_loss_fn,
                 metrics=["accuracy"],
             )
-            self._log(f"✅ FedProx proximal loss active (mu={self.mu})")
 
         # Train locally with validation data & progress bar
         if self.y_train is None:
             # ── Compute class weights from local generator data ──────────
-            # Sample a few batches to build a representative label array
-            # without loading the entire dataset into RAM.
             y_sample_batches = []
             sample_limit = min(len(self.x_train), 50)  # at most 50 batches
             for i in range(sample_limit):
@@ -219,6 +212,8 @@ class FLClient(fl.client.NumPyClient):
                 class_weight=class_weights,
                 verbose=1,
             )
+            import gc
+            gc.collect()
         else:
             y_train_arr = self.y_train
             try:
@@ -242,6 +237,8 @@ class FLClient(fl.client.NumPyClient):
                 class_weight=class_weights,
                 verbose=1,
             )
+            import gc
+            gc.collect()
 
         # Get updated weights
         updated_weights = self.model.get_weights()
