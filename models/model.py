@@ -170,8 +170,8 @@ class CategoricalFocalLoss(tf.keras.losses.Loss):
     Equivalent to CategoricalFocalCrossentropy (added in TF 2.11+).
     FL(p_t) = -alpha * (1 - p_t)^gamma * log(p_t)
     """
-    def __init__(self, alpha=0.25, gamma=2.0, label_smoothing=0.0,
-                 num_classes=8, **kwargs):
+    def __init__(self, alpha=1.0, gamma=2.0, label_smoothing=0.0,
+                 num_classes=5, **kwargs):
         super().__init__(**kwargs)
         self.alpha           = alpha
         self.gamma           = gamma
@@ -197,9 +197,9 @@ class CategoricalFocalLoss(tf.keras.losses.Loss):
         return config
 
 
-def get_loss_function(use_focal_loss=True, alpha=0.25, gamma=2.0, label_smoothing=0.02, num_classes=4):
+def get_loss_function(use_focal_loss=True, alpha=1.0, gamma=2.0, label_smoothing=0.02, num_classes=5):
     """
-    Returns CategoricalFocalLoss (alpha=0.25, gamma=2.0) by default to eliminate
+    Returns CategoricalFocalLoss (alpha=1.0, gamma=2.0) by default to eliminate
     false positive trade-offs and maximize overall Precision, F1-Score, and Accuracy.
     """
     if use_focal_loss:
@@ -337,7 +337,7 @@ def build_model(
     output = Dense(num_classes, activation="softmax", kernel_initializer="he_normal", name="predictions")(fused)
 
     model = Model(inputs=model_inputs, outputs=output, name="Multimodal_SkinLesion_Net")
-    loss_fn = get_loss_function(label_smoothing=label_smoothing)
+    loss_fn = get_loss_function(label_smoothing=label_smoothing, num_classes=num_classes)
     optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
 
     model.compile(
@@ -364,6 +364,7 @@ def unfreeze_model(
     label_smoothing=0.02,
     l2_strength=1e-4,
     model_name="densenet121",
+    num_classes=None,
 ):
     try:
         backbone = model.get_layer("backbone")
@@ -406,9 +407,11 @@ def unfreeze_model(
             if isinstance(layer, BatchNormalization):
                 layer.trainable = False
 
-    loss_fn = get_loss_function(label_smoothing=label_smoothing)
-    optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
+    if num_classes is None:
+        num_classes = model.output_shape[-1] if hasattr(model, "output_shape") else 5
 
+    loss_fn = get_loss_function(label_smoothing=label_smoothing, num_classes=num_classes)
+    optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
 
     model.compile(
         optimizer=optimizer,

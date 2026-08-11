@@ -10,6 +10,14 @@ Then run clients in separate terminals.
 """
 
 import os
+import sys
+
+# Ensure UTF-8 output encoding on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import argparse

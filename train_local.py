@@ -24,6 +24,13 @@ Usage:
 
 import os
 import sys
+
+# Ensure UTF-8 output encoding on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import random
 import json
@@ -600,15 +607,15 @@ def train(args):
     base_callbacks_p1 = [
         tf.keras.callbacks.ModelCheckpoint(
             filepath=ckpt_filepath,
-            monitor="val_auc",
-            mode="max",
+            monitor="val_loss",
+            mode="min",
             save_best_only=True,
             save_weights_only=True,
             verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
-            monitor="val_auc",
-            mode="max",
+            monitor="val_loss",
+            mode="min",
             patience=8,
             restore_best_weights=True,
             verbose=1,
@@ -622,15 +629,15 @@ def train(args):
     base_callbacks_p2 = [
         tf.keras.callbacks.ModelCheckpoint(
             filepath=ckpt_filepath,
-            monitor="val_auc",
-            mode="max",
+            monitor="val_loss",
+            mode="min",
             save_best_only=True,
             save_weights_only=True,
             verbose=1,
         ),
         tf.keras.callbacks.EarlyStopping(
-            monitor="val_auc",
-            mode="max",
+            monitor="val_loss",
+            mode="min",
             patience=12,
             restore_best_weights=True,
             verbose=1,
@@ -667,7 +674,7 @@ def train(args):
 
     if args.finetune_epochs > 0:
         print(f"\n[Fine-tune] Unfreezing top backbone layers for {args.model_name} ({args.finetune_epochs} epochs)...")
-        model = unfreeze_model(model, fine_tune_at=None, learning_rate=1e-4, model_name=args.model_name)
+        model = unfreeze_model(model, fine_tune_at=None, learning_rate=1e-4, model_name=args.model_name, num_classes=NUM_CLASSES)
 
         if args.lr_scheduler == "cosine":
             callbacks_p2 = base_callbacks_p2 + [make_cosine_callback(initial_lr=1e-4, total_epochs=args.finetune_epochs)]

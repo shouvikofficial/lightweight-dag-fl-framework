@@ -168,7 +168,7 @@ class FLClient(fl.client.NumPyClient):
             mu_val = self.mu
 
             def fedprox_loss_fn(y_true, y_pred):
-                focal = CategoricalFocalLoss(alpha=0.25, gamma=2.0, label_smoothing=0.02, num_classes=5)
+                focal = CategoricalFocalLoss(alpha=1.0, gamma=2.0, label_smoothing=0.02, num_classes=5)
                 base_loss = focal(y_true, y_pred)
                 prox_loss = 0.0
                 for w, gw in zip(model_ref.trainable_weights, g_weights):

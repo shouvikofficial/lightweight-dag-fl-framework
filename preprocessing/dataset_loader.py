@@ -161,19 +161,27 @@ class DualInputGenerator(tf.keras.utils.Sequence):
         return len(self.base_gen)
 
     def _get_batch(self, idx):
-        """Return (img_batch, meta_batch, label_batch) for a given index."""
+        """Return (img_batch, meta_batch, label_batch) for a given index with strict index alignment."""
         x_img, y = self.base_gen[idx]
         batch_size = len(x_img)
         start_i = idx * self.batch_size
-        batch_fns = self.filenames[start_i : start_i + batch_size]
+
+        # Accurately map shuffled Keras indices to matching image filenames
+        if hasattr(self.base_gen, "index_array") and self.base_gen.index_array is not None:
+            end_i = min(start_i + batch_size, len(self.base_gen.index_array))
+            batch_indices = self.base_gen.index_array[start_i:end_i]
+            batch_fns = [self.filenames[i] for i in batch_indices]
+        else:
+            batch_fns = self.filenames[start_i : start_i + batch_size]
+
         meta_batch = np.array(
-            [self.meta_lookup.get(fn, np.array([0.0, 2.0, 0.0], dtype=np.float32)) for fn in batch_fns],
+            [self.meta_lookup.get(fn, np.array([0.0, 1.0, 0.0], dtype=np.float32)) for fn in batch_fns],
             dtype=np.float32
         )
         return x_img, meta_batch, y
 
     def _apply_class_specific_aug_inplace(self, img_np: np.ndarray, label_vec: np.ndarray):
-        """Applies in-place class-specific spatial and contrast augmentation for minority cancers."""
+        """Applies in-place class-specific spatial augmentation for minority cancers."""
         cls_idx = int(np.argmax(label_vec))
         if cls_idx in [0, 2, 3, 4]:
             # 1. Multi-angle Orthogonal Rotation (90, 180, 270 deg)
@@ -181,15 +189,11 @@ class DualInputGenerator(tf.keras.utils.Sequence):
             if k > 0:
                 img_np[...] = np.rot90(img_np, k=k, axes=(0, 1))
 
-            # 2. Random Flips
+            # 2. Random Flips (preserving normalized values)
             if np.random.rand() > 0.5:
                 img_np[...] = np.fliplr(img_np)
             if np.random.rand() > 0.5:
                 img_np[...] = np.flipud(img_np)
-
-            # 3. Dynamic Contrast Perturbation (Preserving ImageNet Normalization)
-            alpha = np.random.uniform(0.95, 1.05)
-            img_np[...] = img_np * alpha
 
     def __getitem__(self, idx):
         x_img, meta_batch, y = self._get_batch(idx)
