@@ -561,7 +561,7 @@ def train(args):
     y_train_ints = np.array([CLASS_NAMES.index(l) for l in train_df["label"]])
     y_train_oh = tf.keras.utils.to_categorical(y_train_ints, num_classes=NUM_CLASSES)
     class_weights = get_class_weights(y_train_ints, num_classes=NUM_CLASSES)
-    print(f"\n[2/4] Training Mode: CATEGORICAL FOCAL LOSS (gamma=2.0, alpha=0.25) — Dynamic Hard Example Mining")
+    print(f"\n[2/4] Training Mode: CATEGORICAL FOCAL LOSS (gamma=2.0, alpha=1.0) — Dynamic Hard Example Mining")
     print(f"      Class Weights: {class_weights}")
 
     # ----------------------------------------
