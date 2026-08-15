@@ -99,6 +99,7 @@ class FLClient(fl.client.NumPyClient):
         return loss, metrics
 
     def _collect_eval_data(self):
+        import gc
         if self.y_test is None:
             y_true_batches = []
             y_prob_batches = []
@@ -110,8 +111,11 @@ class FLClient(fl.client.NumPyClient):
                     y_prob = self.model.predict(x_batch, verbose=0)
                 y_true_batches.append(y_batch)
                 y_prob_batches.append(y_prob)
+                del x_batch
             y_true = np.concatenate(y_true_batches, axis=0)
             y_prob = np.concatenate(y_prob_batches, axis=0)
+            del y_true_batches, y_prob_batches
+            gc.collect()
             return y_true, y_prob
 
         if isinstance(self.x_test, (list, tuple)):
@@ -119,6 +123,7 @@ class FLClient(fl.client.NumPyClient):
         else:
             y_prob = self.model.predict(self.x_test, verbose=0)
         y_true = self.y_test
+        gc.collect()
         return y_true, y_prob
 
     def _compute_extra_metrics(self, y_true, y_prob):
@@ -395,6 +400,9 @@ class FLClient(fl.client.NumPyClient):
             metrics.get("categorical_accuracy", metrics.get("acc_manual", 0.0)),
         )
         metrics["accuracy"] = float(accuracy)
+
+        del y_true, y_prob, eval_results
+        gc.collect()
 
         if accuracy == 0.0:
             y_true_labels = np.argmax(y_true, axis=1)

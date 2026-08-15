@@ -24,6 +24,7 @@ import argparse
 from datetime import datetime
 import time
 import json
+import gc
 from typing import Tuple
 import numpy as np
 
@@ -52,6 +53,8 @@ SERVER_LOG_PATH = os.path.join(LOG_DIR, "server.log")
 METRICS_PATH = os.path.join(LOG_DIR, "metrics.jsonl")
 GLOBAL_TEST_CSV = "dataset/partitions/global_test.csv"
 IMAGE_ROOT = "dataset/raw/ISIC_2019_Training_Input"
+CHECKPOINT_DIR = os.path.join("models", "fl_checkpoints")
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 
 def _trend_arrow(curr, prev, higher_is_better=True):
@@ -193,7 +196,7 @@ def _evaluate_global_test(weights, model_name="densenet121", use_tta=True) -> di
 
 class FedProxStrategy(fl.server.strategy.FedAvg):
 
-    def __init__(self, mu=0.01, total_rounds=NUM_ROUNDS, model_name="densenet121", *args, **kwargs):
+    def __init__(self, mu=0.01, total_rounds=NUM_ROUNDS, start_round=1, model_name="densenet121", *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fedprox = FedProx(mu=mu)
         self.aggregator = Aggregator()
@@ -202,28 +205,31 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         self.prev_metrics = None
         self.last_round_clients = []
         self.total_rounds = total_rounds
+        self.start_round = start_round
         self.model_name = model_name
         self._latest_weights = None
         self.trust_log = []
 
     def configure_fit(self, server_round, parameters, client_manager):
         fit_config = super().configure_fit(server_round, parameters, client_manager)
+        eff_round = server_round + (self.start_round - 1)
         self.round_start_time[server_round] = time.time()
 
         updated_config = []
         for client, fit_ins in fit_config:
-            fit_ins.config["round"] = server_round
+            fit_ins.config["round"] = eff_round
             updated_config.append((client, fit_ins))
 
         _log(
-            f"Round {server_round} - selected {len(updated_config)} clients for training"
+            f"Round {eff_round} (Step {server_round}) - selected {len(updated_config)} clients for training"
         )
         return updated_config
 
     def configure_evaluate(self, server_round, parameters, client_manager):
         eval_config = super().configure_evaluate(server_round, parameters, client_manager)
+        eff_round = server_round + (self.start_round - 1)
         _log(
-            f"Round {server_round} - selected {len(eval_config)} clients for evaluation"
+            f"Round {eff_round} (Step {server_round}) - selected {len(eval_config)} clients for evaluation"
         )
         return eval_config
 
@@ -232,7 +238,8 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
         if not results:
             return None, {}
 
-        _log(f"Round {server_round} - aggregating {len(results)} clients")
+        eff_round = server_round + (self.start_round - 1)
+        _log(f"Round {eff_round} - aggregating {len(results)} clients")
 
         client_weights = []
         client_sizes = []
@@ -317,6 +324,26 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
 
         self._latest_weights = aggregated_weights
         self.last_round_clients = client_ids
+
+        # ── Save aggregated weights after every round (crash-safe) ───────────
+        try:
+            import tensorflow as tf
+            model_ckpt = build_model(self.model_name, num_classes=5)
+            model_ckpt.set_weights(aggregated_weights)
+            # Overwrite latest (always accessible)
+            latest_path = os.path.join(CHECKPOINT_DIR, "fl_global_latest.weights.h5")
+            model_ckpt.save_weights(latest_path)
+            # Per-round backup (for reproducibility)
+            round_path = os.path.join(CHECKPOINT_DIR, f"fl_global_round_{eff_round:02d}.weights.h5")
+            model_ckpt.save_weights(round_path)
+            _log(f"[CHECKPOINT] Global model saved -> {round_path}")
+            # ── CRITICAL: free checkpoint model from RAM immediately ──────────
+            del model_ckpt
+            gc.collect()
+            tf.keras.backend.clear_session()
+        except Exception as ckpt_err:
+            _log(f"[WARN] Checkpoint save failed: {ckpt_err}")
+
         return aggregated_parameters, {}
 
     def aggregate_evaluate(self, server_round, results, failures):
@@ -343,19 +370,20 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
             key: value / total_examples for key, value in weighted_metrics.items()
         }
 
+        eff_round = server_round + (self.start_round - 1)
         if avg_loss is not None:
             metrics_str = " | ".join(
                 f"{k}={v:.4f}" for k, v in avg_metrics.items()
             )
             _log(
-                f"Round {server_round} eval: loss={avg_loss:.4f}"
+                f"Round {eff_round} eval: loss={avg_loss:.4f}"
                 + (f" | {metrics_str}" if metrics_str else "")
             )
 
             os.makedirs(LOG_DIR, exist_ok=True)
             payload = {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "round": server_round,
+                "round": eff_round,
                 "loss": avg_loss,
                 "metrics": avg_metrics,
             }
@@ -367,7 +395,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
                 train_time_sec = time.time() - self.round_start_time[server_round]
 
             _print_round_summary(
-                server_round,
+                eff_round,
                 self.last_round_clients,
                 avg_loss,
                 avg_metrics,
@@ -381,7 +409,7 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
                 "roc_auc_ovr": avg_metrics.get("roc_auc_ovr", 0.0),
             }
 
-            if server_round == self.total_rounds and self._latest_weights is not None:
+            if eff_round >= self.total_rounds and self._latest_weights is not None:
                 _log("Final global test evaluation starting")
                 try:
                     eval_res = _evaluate_global_test(self._latest_weights, model_name=self.model_name)
@@ -393,6 +421,9 @@ class FedProxStrategy(fl.server.strategy.FedAvg):
                     )
                 except Exception as exc:
                     _log(f"Global test evaluation failed: {exc}")
+
+        # ── Free memory after every evaluation round ──────────────────────────
+        gc.collect()
 
         return avg_loss, avg_metrics
 
@@ -442,6 +473,18 @@ def parse_args():
         choices=["densenet121", "densenet169", "densenet201", "resnet50v2", "efficientnetb0"],
         help="Backbone architecture to use (default: densenet201)",
     )
+    parser.add_argument(
+        "--resume_weights",
+        type=str,
+        default=None,
+        help="Path to saved .weights.h5 file to initialize global model from",
+    )
+    parser.add_argument(
+        "--start_round",
+        type=int,
+        default=1,
+        help="Starting round number when resuming (e.g. 17)",
+    )
     return parser.parse_args()
 
 
@@ -454,15 +497,32 @@ def start_server(args):
     min_available_clients = args.total_clients
     fraction_fit = args.fraction_fit if args.fraction_fit is not None else 1.0
 
+    # ── Load initial parameters if resuming ──────────────────────────────────
+    init_params = None
+    if args.resume_weights:
+        if os.path.exists(args.resume_weights):
+            _log(f"Loading initial global weights from -> {args.resume_weights}")
+            model_init = build_model(args.model_name, num_classes=5)
+            model_init.load_weights(args.resume_weights)
+            init_params = fl.common.ndarrays_to_parameters(model_init.get_weights())
+            del model_init
+            gc.collect()
+        else:
+            _log(f"[WARN] Specified resume weights not found: {args.resume_weights}")
+
+    num_server_rounds = (args.rounds - args.start_round + 1) if args.start_round > 1 else args.rounds
+
     strategy = FedProxStrategy(
         mu=0.01,
         total_rounds=args.rounds,
+        start_round=args.start_round,
         model_name=args.model_name,
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_fit,
         min_fit_clients=min_fit_clients,
         min_evaluate_clients=min_evaluate_clients,
         min_available_clients=min_available_clients,
+        initial_parameters=init_params,
     )
 
     print("=" * 50)
@@ -480,7 +540,7 @@ def start_server(args):
     fl.server.start_server(
         server_address=args.server,
         strategy=strategy,
-        config=fl.server.ServerConfig(num_rounds=args.rounds),
+        config=fl.server.ServerConfig(num_rounds=num_server_rounds),
     )
 
 
