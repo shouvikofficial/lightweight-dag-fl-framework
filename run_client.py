@@ -215,7 +215,7 @@ def start_client(client_id, server_address, model_name="densenet121", attack_typ
     client_ledger_path = os.path.join(BLOCKCHAIN_DIR, f"ledger_{client_id}.json")
     os.makedirs(BLOCKCHAIN_DIR, exist_ok=True)
     with open(client_ledger_path, "w", encoding="utf-8") as f:
-        json.dump(dag.get_all_transactions(), f, indent=4)
+        json.dump([tx.to_dict() if hasattr(tx, "to_dict") else tx for tx in dag.get_all_transactions()], f, indent=4)
     _log(client_id, f"DAG ledger saved -> {client_ledger_path}")
 
 
