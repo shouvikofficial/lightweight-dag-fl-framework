@@ -133,8 +133,12 @@ class TrustAwareAggregator:
             # Update adaptive historical trust state
             self.client_trust_scores[cid] = new_trust
 
-            # 3-Tier Security Decision
-            if new_trust >= self.accept_threshold:
+            # 3-Tier Security Decision with Instant Adversarial Detection
+            if sim < 0.0:
+                # Immediate quarantine for negative gradient direction (Sign Inversion)
+                action = "REJECT"
+                new_trust = min(new_trust, 0.45)
+            elif new_trust >= self.accept_threshold:
                 action = "ACCEPT"
             elif new_trust >= self.reject_threshold:
                 action = "PENALIZE"
